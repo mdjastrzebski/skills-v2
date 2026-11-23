@@ -405,6 +405,66 @@ test('reports Cursor thinking spans as model gaps and drops duplicates', () => {
   assert.deepEqual(lines, ['- 45s [main] at 10:00:05 UTC, before Let me write the reader']);
 });
 
+test('reads tool results for a Cursor app transcript from the state database', () => {
+  const env = setup();
+  const sessionId = 'app-tab-session';
+  const file = join(
+    env.cursorHome,
+    'projects',
+    projectSlug(env.cwd),
+    'agent-transcripts',
+    sessionId,
+    `${sessionId}.jsonl`,
+  );
+  writeJsonl(file, [
+    cursorTranscriptUser('2026-11-20T10:00:00.000Z', 'Run tests'),
+    cursorTranscriptAssistant('2026-11-20T10:00:05.000Z', [
+      { type: 'tool_use', name: 'Shell', input: { command: 'pnpm test' } },
+    ]),
+  ]);
+  const stateDb = join(env.root, 'state.vscdb');
+  writeAppState(stateDb, sessionId);
+  const result = run(env, [file], { env: { CURSOR_STATE_DB: stateDb } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /Tool results: none/);
+  const sections = splitSections(result.stdout);
+  assert.match(sections['Failed tool calls'], /Shell: `pnpm test` -> exit code 1/);
+  assert.match(sections.Repeats, /- 2x \[main\] Shell: `pnpm test`/);
+  assert.match(sections['Token hotspots'], /Shell: `pnpm test`/);
+  assert.match(sections['Time hotspots'], /5s \[main\] Shell: `pnpm test`/);
+});
+
+test('selects a Cursor app transcript that has no store', () => {
+  const env = setup();
+  const claudeFile = writeClaudeSession(env);
+  setModifiedTime(claudeFile, 1000);
+  const sessionId = 'app-tab-session';
+  const file = join(
+    env.cursorHome,
+    'projects',
+    projectSlug(env.cwd),
+    'agent-transcripts',
+    sessionId,
+    `${sessionId}.jsonl`,
+  );
+  writeJsonl(file, [
+    cursorTranscriptUser('2026-11-20T10:00:00.000Z', 'Read the file'),
+    cursorTranscriptAssistant('2026-11-20T10:00:05.000Z', [
+      { type: 'tool_use', name: 'Read', input: { path: '/repo/a.ts' } },
+    ]),
+    cursorTranscriptAssistant('2026-11-20T10:00:10.000Z', [
+      { type: 'tool_use', name: 'Read', input: { path: '/repo/a.ts' } },
+    ]),
+  ]);
+  setModifiedTime(file, 5000);
+  const result = run(env, []);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, new RegExp(`Session: ${sessionId}`));
+  assert.match(result.stdout, /Harness: Cursor/);
+  assert.match(result.stdout, /Tool results: none \(2 calls in the transcript\)/);
+  assert.match(splitSections(result.stdout).Repeats, /- 2x \[main\] Read: `\/repo\/a\.ts`/);
+});
+
 test('selects a newer Cursor session ahead of Claude Code and Codex', () => {
   const env = setup();
   const claudeFile = writeClaudeSession(env);
@@ -532,6 +592,7 @@ function run(env, args, options = {}) {
     GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_CONFIG_NOSYSTEM: '1',
     PWD: cwd,
+    ...options.env,
   });
   return spawnSync(process.execPath, [script, ...args], {
     cwd,
@@ -1037,6 +1098,42 @@ function writeCursorLoopSession(env) {
     JSON.stringify({ cwd: env.cwd, title: 'Loop', createdAtMs: 1, updatedAtMs: 2 }),
   );
   return store;
+}
+
+function writeAppState(file, sessionId) {
+  const database = new DatabaseSync(file);
+  database.exec('CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value BLOB)');
+  const insert = database.prepare('INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)');
+  const bubbles = [
+    appBubble('b1', 'pnpm test', 1, 'FAIL src/a.test.mjs', 5_000),
+    appBubble('b2', 'pnpm test', 0, 'ok', 1_000),
+  ];
+  insert.run(
+    `composerConvHeaders:${sessionId}:000000`,
+    JSON.stringify(bubbles.map((bubble) => ({ bubbleId: bubble.id }))),
+  );
+  for (const bubble of bubbles) {
+    insert.run(`bubbleId:${sessionId}:${bubble.id}`, JSON.stringify(bubble.body));
+  }
+  database.close();
+}
+
+function appBubble(id, command, exitCode, output, durationMs) {
+  const start = Date.parse('2026-11-20T10:00:05.000Z');
+  return {
+    id,
+    body: {
+      startedAtMs: start,
+      completedAtMs: start + durationMs,
+      toolFormerData: {
+        name: 'run_terminal_command_v2',
+        toolCallId: id,
+        params: JSON.stringify({ command }),
+        result: JSON.stringify({ exitCode, output }),
+        additionalData: { status: exitCode === 0 ? 'success' : 'error' },
+      },
+    },
+  };
 }
 
 function writeCursorStore(file, messages) {

@@ -116,6 +116,7 @@ function formatReport(session) {
     `Harness: ${session.harness}`,
     `Agents: main + ${subagentCount} subagent${subagentCount === 1 ? '' : 's'}`,
     `Top ${TOP_ITEMS} items per signal. ~tokens = chars / ${CHARS_PER_TOKEN}.`,
+    ...missingResultsLine(session),
     '',
     ...formatFailedCalls(session.agents),
     '',
@@ -128,6 +129,14 @@ function formatReport(session) {
     ...formatFeedbackLoops(loops),
   ];
   return lines.join('\n');
+}
+
+function missingResultsLine(session) {
+  if (session.resultsRecorded !== false) {
+    return [];
+  }
+  const callCount = session.agents.reduce((count, agent) => count + agent.calls.length, 0);
+  return [`Tool results: none (${callCount} calls in the transcript).`];
 }
 
 function formatFailedCalls(agents) {

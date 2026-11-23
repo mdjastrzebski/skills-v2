@@ -50,6 +50,7 @@ const MONTHS = {
 export function listCursorMainSessions(directories) {
   const subagentIds = listSubagentIds();
   const sessions = [];
+  const seen = new Set();
   for (const dir of listChatSessionDirs()) {
     const meta = readJsonFile(join(dir, 'meta.json'));
     const store = join(dir, 'store.db');
@@ -57,7 +58,14 @@ export function listCursorMainSessions(directories) {
     if (!isMain || !existsSync(store)) {
       continue;
     }
+    seen.add(basename(dir));
     sessions.push({ file: store, updatedMs: getStoreUpdatedMs(store, meta) });
+  }
+  for (const session of listTranscriptSessions(directories, subagentIds)) {
+    if (seen.has(session.id)) {
+      continue;
+    }
+    sessions.push({ file: session.file, updatedMs: session.updatedMs });
   }
   return sessions;
 }
@@ -84,10 +92,18 @@ export function readCursorSession(sessionFile) {
   if (resolved.messages.length === 0) {
     throw new Error(`Bad transcript file ${sessionFile}: no messages`);
   }
+  if (!hasToolResults(resolved.messages)) {
+    attachAppToolResults(resolved);
+  }
   const mainAgent = messagesToAgent(resolved.messages, 'main', true);
   applyModelSpans(mainAgent, resolved.spans);
   const subagents = loadSubagents(resolved.id, resolved.cwd, resolved.transcriptFile);
-  return { id: resolved.id, harness: 'Cursor', agents: [mainAgent, ...subagents] };
+  return {
+    id: resolved.id,
+    harness: 'Cursor',
+    agents: [mainAgent, ...subagents],
+    resultsRecorded: hasToolResults(resolved.messages) || !hasToolCalls(resolved.messages),
+  };
 }
 
 function getStoreUpdatedMs(store, meta) {
@@ -104,6 +120,246 @@ function getStoreUpdatedMs(store, meta) {
 
 function getCursorHome() {
   return process.env.CURSOR_HOME ?? join(homedir(), '.cursor');
+}
+
+function listTranscriptSessions(directories, subagentIds) {
+  const projectsDir = join(getCursorHome(), 'projects');
+  if (!existsSync(projectsDir)) {
+    return [];
+  }
+  const slugs = new Set(directories.map((directory) => projectSlug(directory)));
+  const sessions = [];
+  for (const project of readdirSync(projectsDir, { withFileTypes: true })) {
+    if (!project.isDirectory() || !slugs.has(project.name)) {
+      continue;
+    }
+    const transcriptsDir = join(projectsDir, project.name, 'agent-transcripts');
+    if (!existsSync(transcriptsDir)) {
+      continue;
+    }
+    for (const session of readdirSync(transcriptsDir, { withFileTypes: true })) {
+      if (!session.isDirectory() || subagentIds.has(session.name)) {
+        continue;
+      }
+      const file = join(transcriptsDir, session.name, `${session.name}.jsonl`);
+      if (!existsSync(file)) {
+        continue;
+      }
+      sessions.push({ id: session.name, file, updatedMs: statSync(file).mtimeMs });
+    }
+  }
+  return sessions;
+}
+
+function hasToolCalls(messages) {
+  return messages.some((message) =>
+    (Array.isArray(message.content) ? message.content : []).some(
+      (block) => block?.type === 'tool-call' || block?.type === 'tool_use',
+    ),
+  );
+}
+
+const APP_TOOL_NAMES = new Map([
+  ['run_terminal_command_v2', 'Shell'],
+  ['read_file_v2', 'Read'],
+  ['ripgrep_raw_search', 'Grep'],
+  ['glob_file_search', 'Glob'],
+  ['edit_file_v2', 'StrReplace'],
+]);
+
+function attachAppToolResults(resolved) {
+  const bubbles = readAppToolBubbles(resolved.id);
+  if (bubbles.length === 0) {
+    return;
+  }
+  const kept = resolved.messages.filter((message) => !messageHasToolCall(message));
+  resolved.messages = [...kept, ...bubbles.flatMap(bubbleToMessages)];
+}
+
+function messageHasToolCall(message) {
+  return (Array.isArray(message.content) ? message.content : []).some(
+    (block) => block?.type === 'tool-call' || block?.type === 'tool_use',
+  );
+}
+
+function readAppToolBubbles(sessionId) {
+  const file = cursorStateDb();
+  if (!file) {
+    return [];
+  }
+  const database = openStore(file);
+  try {
+    const header = database
+      .prepare('SELECT value FROM cursorDiskKV WHERE key = ?')
+      .get(`composerConvHeaders:${sessionId}:000000`);
+    if (!header) {
+      return [];
+    }
+    const bubbles = JSON.parse(decodeValue(header.value));
+    if (!Array.isArray(bubbles)) {
+      throw new Error(
+        `Bad Cursor state ${file}: composer headers for ${sessionId} are not a list.`,
+      );
+    }
+    const readBubble = database.prepare('SELECT value FROM cursorDiskKV WHERE key = ?');
+    const tools = [];
+    for (const item of bubbles) {
+      if (!item || typeof item.bubbleId !== 'string') {
+        continue;
+      }
+      const row = readBubble.get(`bubbleId:${sessionId}:${item.bubbleId}`);
+      if (!row) {
+        continue;
+      }
+      const bubble = JSON.parse(decodeValue(row.value));
+      const data = bubble.toolFormerData;
+      if (!data || typeof data.name !== 'string' || data.name === '') {
+        continue;
+      }
+      tools.push({ data, startedAtMs: bubble.startedAtMs, completedAtMs: bubble.completedAtMs });
+    }
+    return tools;
+  } finally {
+    database.close();
+  }
+}
+
+function cursorStateDb() {
+  if (process.env.CURSOR_STATE_DB) {
+    return process.env.CURSOR_STATE_DB;
+  }
+  const home = homedir();
+  const candidates = [
+    join(home, 'Library', 'Application Support', 'Cursor', 'User', 'globalStorage', 'state.vscdb'),
+    join(home, '.config', 'Cursor', 'User', 'globalStorage', 'state.vscdb'),
+  ];
+  return candidates.find((file) => existsSync(file)) ?? null;
+}
+
+function bubbleToMessages(bubble) {
+  const { data } = bubble;
+  const toolName = APP_TOOL_NAMES.get(data.name) ?? data.name;
+  const args = appArgs(data.name, parseJson(data.params) ?? {});
+  const result = parseJson(data.result) ?? data.result ?? '';
+  const callId = data.toolCallId || data.name;
+  const failure = appFailure(data, result);
+  const text = failure?.text ?? appResultText(result);
+  const durationMs = durationBetween(bubble.startedAtMs, bubble.completedAtMs);
+  return [
+    {
+      role: 'assistant',
+      content: [
+        {
+          type: 'tool-call',
+          toolCallId: callId,
+          toolName,
+          args,
+          startedAtMs: typeof bubble.startedAtMs === 'number' ? bubble.startedAtMs : undefined,
+        },
+      ],
+    },
+    {
+      role: 'tool',
+      content: [{ type: 'tool-result', toolCallId: callId, toolName, result: text }],
+      providerOptions: {
+        cursor: {
+          highLevelToolCallResult: {
+            isError: failure?.isError === true,
+            rawErrorMessages: failure?.isError ? [text] : [],
+            output: {
+              success: {
+                exitCode: failure?.exitCode ?? 0,
+                localExecutionTimeMs: durationMs ?? undefined,
+              },
+            },
+          },
+        },
+      },
+    },
+  ];
+}
+
+function appArgs(name, params) {
+  if (!params || typeof params !== 'object') {
+    return {};
+  }
+  if (name === 'run_terminal_command_v2') {
+    return { command: params.command };
+  }
+  if (name === 'read_file_v2') {
+    return { path: params.targetFile };
+  }
+  if (name === 'ripgrep_raw_search') {
+    return { pattern: params.pattern, path: params.path, glob: params.glob };
+  }
+  if (name === 'glob_file_search') {
+    return { glob_pattern: params.globPattern, path: params.targetDirectory };
+  }
+  if (name === 'edit_file_v2') {
+    return { path: params.relativeWorkspacePath };
+  }
+  return params;
+}
+
+function appResultText(result) {
+  if (typeof result === 'string') {
+    return result;
+  }
+  if (result && typeof result === 'object' && typeof result.output === 'string') {
+    return result.output;
+  }
+  return result === undefined ? '' : JSON.stringify(result);
+}
+
+function appFailure(data, result) {
+  const status = data.additionalData?.status;
+  if (status === 'cancelled') {
+    return { isError: true, text: 'cancelled' };
+  }
+  const exitCode = result && typeof result === 'object' ? result.exitCode : undefined;
+  if (typeof exitCode === 'number' && exitCode !== 0) {
+    return { exitCode };
+  }
+  if (status === 'error') {
+    return { isError: true };
+  }
+  return null;
+}
+
+function durationBetween(startMs, endMs) {
+  if (typeof startMs !== 'number' || typeof endMs !== 'number' || endMs < startMs) {
+    return null;
+  }
+  return endMs - startMs;
+}
+
+function decodeValue(value) {
+  if (typeof value === 'string') {
+    return value;
+  }
+  return Buffer.from(value).toString('utf8');
+}
+
+function parseJson(value) {
+  if (typeof value !== 'string' || !value.startsWith('{')) {
+    return null;
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function hasToolResults(messages) {
+  return messages.some((message) => {
+    if (message.role === 'tool') {
+      return true;
+    }
+    return (Array.isArray(message.content) ? message.content : []).some(
+      (block) => block?.type === 'tool-result' || block?.type === 'tool_result',
+    );
+  });
 }
 
 function listChatSessionDirs() {
@@ -552,6 +808,9 @@ function readAssistantMessage(message, agent, state, callsById) {
     return;
   }
   for (const block of toolCalls) {
+    if (typeof block.startedAtMs === 'number') {
+      anchor(agent, state, block.startedAtMs);
+    }
     const tool = requireField(block.toolName ?? block.name, 'toolName', agent);
     const callId = requireField(block.toolCallId ?? block.id, 'toolCallId', agent);
     const args = normalizeArgs(block.args ?? block.input);
