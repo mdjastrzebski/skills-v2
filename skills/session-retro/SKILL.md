@@ -1,7 +1,7 @@
 ---
 name: session-retro
 disable-model-invocation: true
-description: Use when the user asks for a retrospective of this agent session (or of another Claude Code, Codex, or Cursor session). Gives the 3–5 most costly impediments, such as failed or repeated tool calls, large outputs, slow steps or subagents, and unclear instructions, each with evidence and a concrete fix that the user can pick to apply.
+description: Review an agent session and propose evidence-based improvements for the user to choose.
 ---
 
 # Session Retro
@@ -23,12 +23,13 @@ description: Use when the user asks for a retrospective of this agent session (o
 
    If the script fails or finds no session, tell the user in one line: `No script signals: <reason>`. Then continue with your own reflection only. Do not search for transcripts in other places.
 
-3. **Merge** both sources into 3–5 impediments, most costly first. Do not list small one-off retries. A goal loop is an impediment too. Fix examples: a faster check command, a stop rule after N attempts. For each impediment, give:
+3. **Merge** both sources into up to five evidenced impediments, most costly first. Report fewer than three, or none, when the evidence supports fewer; distinguish measured costs from possible improvements. Treat token hotspots as leads: output size alone is not a finding; establish avoidable reading or a concrete consequence before proposing a change. For each impediment, give:
    - What happened (one line).
    - Evidence: a script signal or your own observation.
    - Approximate cost (time, tokens, or count of retries), when known. Before you give a cost, know what the number measures.
-   - Root cause, if known.
-   - Fix: the exact target file path and the proposed change (short text or diff).
+   - Root cause, if known, and the user-visible consequence.
+   - Any product or scope decision that must be made before implementation, including a simpler alternative that could remove the need for a fix, when applicable.
+   - Proposed change: the exact target file path and a short description or diff, if a useful fix exists.
 4. **Choose the fix target** where the real cause is: project `AGENTS.md` or `CLAUDE.md`, a skill's `SKILL.md`, a new or changed script, tool permissions (`settings.json`), or user memory. For a symlinked skill, resolve the real path and say which repo it is in. If no useful fix exists, say so. Do not invent a fix.
 5. **Ask** the user which fixes to apply: numbers, `all`, or `none`. Do not change any file before the user picks.
 6. **Apply** only the picked fixes. List the changed files.
