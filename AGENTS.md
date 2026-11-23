@@ -36,6 +36,7 @@
 - When a step fails, exit with a clear error message and a non-zero code. Do not guess, and do not silently fall back.
 - Organize each file top-down: high-level functions first, then the helpers that they use.
 - Put tests next to the script as `<name>.test.mjs`. Use `node:test` and `node:assert`.
+- For a bug fix, run the new test against the old code first. It must fail.
 - Run `pnpm install` once to get the dev tools.
 - Before you finish, run `pnpm format`, `pnpm lint`, and `pnpm test`. Fix all errors and warnings.
 - Formatter and linter config: `.oxfmtrc.json` (oxfmt), `.oxlintrc.json` (oxlint).
