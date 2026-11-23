@@ -274,7 +274,7 @@ function readStore(file) {
     const spans = [];
     const seenSpans = new Set();
     for (const row of rows) {
-      const bytes = toBytes(row.data);
+      const bytes = Buffer.from(row.data);
       const message = parseMessageBlob(bytes);
       if (message) {
         messages.push(message);
@@ -304,13 +304,6 @@ function applyModelSpans(agent, spans) {
     return;
   }
   agent.modelSpans = spans;
-}
-
-function toBytes(data) {
-  if (typeof data === 'string') {
-    return Buffer.from(data);
-  }
-  return Buffer.from(data);
 }
 
 function readThinkingSpan(bytes) {
@@ -419,7 +412,7 @@ function openStore(file) {
     ({ DatabaseSync } = require('node:sqlite'));
   } catch (error) {
     throw new Error(
-      `Cannot read transcript file ${file}: node:sqlite is not available (Node.js 22 or later).`,
+      `Cannot read transcript file ${file}: node:sqlite is not available (Node.js 22.13 or later).`,
       { cause: error },
     );
   }

@@ -123,6 +123,43 @@ test('reports a Claude Code feedback loop and groups command variants', () => {
   ]);
 });
 
+test('lists a feedback-loop command only in feedback loops, not in repeats', () => {
+  const env = setup();
+  writeClaudeLoopSession(env, 3);
+  const sections = splitSections(run(env, []).stdout);
+  assert.match(sections['Feedback loops'], /pnpm test/);
+  assert.doesNotMatch(sections.Repeats, /pnpm test/);
+});
+
+test('notes that Claude Code tool times include the wait for tool approval', () => {
+  const env = setup();
+  writeClaudeLoopSession(env, 3);
+  const sections = splitSections(run(env, []).stdout);
+  assert.match(sections['Time hotspots'], /includes time waiting for tool approval/);
+});
+
+test('does not mark a Codex call as failed when only its output has an exit code line', () => {
+  const env = setup();
+  const file = join(
+    env.codexHome,
+    'sessions',
+    '2026',
+    '11',
+    '20',
+    `rollout-${CODEX_SESSION_ID}.jsonl`,
+  );
+  const output =
+    'Chunk ID: a1\nWall time: 10 seconds\nProcess running with session ID 42\nOutput:\nchild step\nExit code: 1\nretrying\n';
+  writeJsonl(file, [
+    codexMeta('2026-11-20T10:00:00.000Z', CODEX_SESSION_ID, env.cwd, 'cli', 'user'),
+    codexCall('2026-11-20T10:00:01.000Z', 'call_1', { cmd: './build.sh', workdir: env.cwd }),
+    codexOutput('2026-11-20T10:00:02.000Z', 'call_1', output),
+  ]);
+  const result = run(env, []);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(splitSections(result.stdout)['Failed tool calls'], /\(0\)\nnone$/);
+});
+
 test('prints none for feedback loops when a command runs only twice (Claude Code)', () => {
   const env = setup();
   writeClaudeLoopSession(env, 2);
@@ -258,7 +295,7 @@ test('fails with a clear message for a file that is not a transcript', () => {
   const result = run(env, [file]);
   assert.equal(result.status, 1);
   assert.equal(result.stdout, '');
-  assert.match(result.stderr, /Not a Claude Code or Codex transcript: .*other\.jsonl/);
+  assert.match(result.stderr, /Not a Claude Code transcript: .*other\.jsonl/);
 });
 
 test('prints usage for --help', () => {
@@ -366,10 +403,10 @@ test(
     );
     const result = run(env, []);
     assert.equal(result.status, 0, result.stderr);
-  const timeSection = splitSections(result.stdout)['Time hotspots'];
-  const lines = timeSection
-    .split('\n')
-    .filter((line) => line.includes('before Let me write the reader'));
+    const timeSection = splitSections(result.stdout)['Time hotspots'];
+    const lines = timeSection
+      .split('\n')
+      .filter((line) => line.includes('before Let me write the reader'));
     assert.deepEqual(lines, ['- 45s [main] at 10:00:05 UTC, before Let me write the reader']);
   },
 );

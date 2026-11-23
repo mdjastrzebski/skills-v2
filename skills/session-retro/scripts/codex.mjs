@@ -190,9 +190,10 @@ function readOutput(payload, timeMs, callsById) {
 }
 
 function findOutputError(text) {
-  const exitCode = text.match(/^(?:Process exited with code|Exit code:) (\d+)$/m);
+  const outputStart = text.indexOf('Output:\n');
+  const header = outputStart === -1 ? text : text.slice(0, outputStart);
+  const exitCode = header.match(/^(?:Process exited with code|Exit code:) (\d+)$/m);
   if (exitCode && exitCode[1] !== '0') {
-    const outputStart = text.indexOf('Output:\n');
     const output = outputStart === -1 ? '' : text.slice(outputStart + 'Output:\n'.length);
     return summarizeError(`exit code ${exitCode[1]}\n${output}`);
   }

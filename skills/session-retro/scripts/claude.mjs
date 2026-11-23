@@ -53,7 +53,7 @@ export function findClaudeSessionById(sessionId) {
 export function readClaudeSession(sessionFile) {
   const entries = readTranscript(sessionFile);
   if (!entries.some(isClaudeMessageEntry)) {
-    throw new Error(`Not a Claude Code or Codex transcript: ${sessionFile}`);
+    throw new Error(`Not a Claude Code transcript: ${sessionFile}`);
   }
   const mainEntries = entries.filter((entry) => entry.isSidechain !== true);
   const mainAgent = readClaudeAgent(mainEntries, 'main', true);

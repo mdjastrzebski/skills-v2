@@ -14,7 +14,7 @@ import {
   listCursorMainSessions,
   readCursorSession,
 } from './cursor.mjs';
-import { findFeedbackLoops } from './loops.mjs';
+import { findFeedbackLoops, normalizeCommand } from './loops.mjs';
 import { oneLine } from './transcript.mjs';
 
 const TOP_ITEMS = 5;
@@ -89,8 +89,9 @@ function findLatestSessionFile(cwd) {
       `No Claude Code, Codex, or Cursor session found for the current directory: ${cwd}`,
     );
   }
-  const sorted = candidates.toSorted((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
-  return sorted[0];
+  const dated = candidates.map((file) => ({ file, mtimeMs: statSync(file).mtimeMs }));
+  const sorted = dated.toSorted((a, b) => b.mtimeMs - a.mtimeMs);
+  return sorted[0].file;
 }
 
 function readSession(sessionFile) {
@@ -123,7 +124,7 @@ function formatReport(session) {
     '',
     ...formatTokenHotspots(session.agents),
     '',
-    ...formatTimeHotspots(session.agents),
+    ...formatTimeHotspots(session.agents, session.harness),
     '',
     ...formatFeedbackLoops(session.agents),
   ];
@@ -146,6 +147,7 @@ function formatFailedCalls(agents) {
 }
 
 function formatRepeats(agents) {
+  const loopCommands = getLoopCommandsByAgent(agents);
   const repeats = [];
   for (const agent of agents) {
     const groups = new Map();
@@ -155,7 +157,7 @@ function formatRepeats(agents) {
       groups.set(call.repeatKey, group);
     }
     for (const calls of groups.values()) {
-      if (calls.length > 1) {
+      if (calls.length > 1 && !isInFeedbackLoop(calls[0], loopCommands.get(agent))) {
         repeats.push({ agent, calls });
       }
     }
@@ -166,7 +168,28 @@ function formatRepeats(agents) {
     const failedText = failedCount > 0 ? ` (${failedCount} failed)` : '';
     return `- ${calls.length}x ${formatAgent(agent)} ${formatCall(calls[0])}${failedText}`;
   });
-  return ['## Repeats', ...orNone(items)];
+  return [
+    '## Repeats',
+    'Shell commands that are in a feedback loop show only in Feedback loops.',
+    ...orNone(items),
+  ];
+}
+
+function getLoopCommandsByAgent(agents) {
+  const commandsByAgent = new Map();
+  for (const loop of findFeedbackLoops(agents)) {
+    const commands = commandsByAgent.get(loop.agent) ?? new Set();
+    commands.add(loop.command);
+    commandsByAgent.set(loop.agent, commands);
+  }
+  return commandsByAgent;
+}
+
+function isInFeedbackLoop(call, loopCommands) {
+  if (!loopCommands || call.shellCommand === null) {
+    return false;
+  }
+  return loopCommands.has(normalizeCommand(call.shellCommand));
 }
 
 function formatTokenHotspots(agents) {
@@ -193,7 +216,7 @@ function formatTokenHotspots(agents) {
   ];
 }
 
-function formatTimeHotspots(agents) {
+function formatTimeHotspots(agents, harness) {
   const longestCalls = getAllCalls(agents)
     .filter(({ call }) => call.endMs !== null && call.endMs > call.startMs)
     .toSorted((a, b) => b.call.endMs - b.call.startMs - (a.call.endMs - a.call.startMs))
@@ -217,7 +240,9 @@ function formatTimeHotspots(agents) {
     .map((agent) => `- ${formatDuration(agent.endMs - agent.startMs)} ${formatAgent(agent)}`);
   return [
     '## Time hotspots',
-    'Longest tool calls:',
+    harness === 'Claude Code'
+      ? 'Longest tool calls (Claude Code: includes time waiting for tool approval):'
+      : 'Longest tool calls:',
     ...orNone(longestCalls),
     'Longest gaps between steps (model time or idle; tool runs and user waits excluded):',
     ...orNone(longestGaps),

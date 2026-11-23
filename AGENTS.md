@@ -29,7 +29,7 @@
 
 ## Script authoring
 
-- Use `.mjs` files for Node.js 20 or later.
+- Use `.mjs` files for Node.js 22.13 or later.
 - Make scripts portable: use Node.js built-in modules only, with no external dependencies, and make them work on macOS and Linux.
 - Write code without comments. Use clear names and simple structure, so that the code itself shows what it does.
 - Write plain, readable code. Prefer explicit steps over clever or compact code.
