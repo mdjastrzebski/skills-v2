@@ -25,6 +25,7 @@
 - Keep skills short and easy for humans to read.
 - Write the skill `description` for the agent that must decide to use the skill. Say when to use the skill and what the agent gets from it. Do not summarize how the skill works.
 - When you author a skill, identify steps that a short script can do better than the agent. Suggest a script for these steps.
+- Make skills report problems, not hide them. If a step does not work, the skill can try one quick alternative. It must not use slow or expensive workarounds. It must tell the user what happened and ask what to do.
 
 ## Script authoring
 
@@ -32,6 +33,7 @@
 - Make scripts portable: use Node.js built-in modules only, with no external dependencies, and make them work on macOS and Linux.
 - Write code without comments. Use clear names and simple structure, so that the code itself shows what it does.
 - Write plain, readable code. Prefer explicit steps over clever or compact code.
+- When a step fails, exit with a clear error message and a non-zero code. Do not guess, and do not silently fall back.
 - Organize each file top-down: high-level functions first, then the helpers that they use.
 - Put tests next to the script as `<name>.test.mjs`. Use `node:test` and `node:assert`.
 - Run `pnpm install` once to get the dev tools.
