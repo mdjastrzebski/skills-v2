@@ -1,13 +1,13 @@
 ---
 name: session-summary
 disable-model-invocation: true
-description: Use when the user asks which subagents ran in a Claude Code session, which models they used, or what the session cost. Gives a Markdown list of each subagent with task, model, cost, and duration, with nested subagents.
+description: Summarize subagents, models, costs, and durations in a Claude Code or Codex session.
 ---
 
-Run from the session's working directory, and show the output unchanged:
+Run from the session's working directory and show the output unchanged:
 
 ```sh
-node <skill-base-dir>/scripts/summary.mjs [session-id]
+node <skill-base-dir>/scripts/summary.mjs [session-id | path/to/session.jsonl]
 ```
 
-With no argument, it summarizes the current session.
+With no argument, the script selects the most recent session for the current directory. Pass a session ID or file path to select a specific session. Codex costs use standard API token prices as an estimate, not actual charges. Task names come from agent paths.
