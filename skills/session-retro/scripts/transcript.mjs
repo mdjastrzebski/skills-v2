@@ -1,5 +1,13 @@
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  realpathSync,
+} from 'node:fs';
+import { join, resolve } from 'node:path';
 
 const CHUNK_SIZE = 64 * 1024;
 const NEWLINE = 0x0a;
@@ -112,10 +120,32 @@ export function summarizeError(text) {
   return `${oneLine(first, 50)} … ${oneLine(last, 70)}`;
 }
 
-export function createAgent(label, isMain) {
+export function getCurrentDirectories() {
+  const logicalDirectories = [process.cwd()];
+  if (process.env.PWD) {
+    logicalDirectories.push(resolve(process.env.PWD));
+  }
+  const directories = new Set();
+  for (const directory of logicalDirectories) {
+    directories.add(directory);
+    directories.add(realpathOrSelf(directory));
+  }
+  return [...directories];
+}
+
+export function isOneOfDirectories(directory, directories) {
+  if (typeof directory !== 'string' || directory === '') {
+    return false;
+  }
+  const real = realpathOrSelf(directory);
+  return directories.some((candidate) => realpathOrSelf(candidate) === real);
+}
+
+export function createAgent(label, isMain, timing = 'exact') {
   return {
     label,
     isMain,
+    timing,
     startMs: null,
     endMs: null,
     tokens: 0,
@@ -125,12 +155,68 @@ export function createAgent(label, isMain) {
   };
 }
 
+export function createCall({ tool, input, repeatInput, startMs, shellCommand, editedFiles }) {
+  return {
+    tool,
+    input,
+    repeatKey: `${tool}\u0000${repeatInput}`,
+    startMs,
+    endMs: null,
+    failed: false,
+    error: '',
+    outputChars: 0,
+    shellCommand,
+    editedFiles,
+  };
+}
+
+export function describeArgs(args, keys) {
+  if (args === null || typeof args !== 'object') {
+    return oneLine(args);
+  }
+  for (const key of keys) {
+    if (typeof args[key] === 'string') {
+      return oneLine(args[key]);
+    }
+  }
+  return oneLine(JSON.stringify(args));
+}
+
+export function withoutDescription(args) {
+  if (args === null || typeof args !== 'object') {
+    return args;
+  }
+  const { description: _description, ...rest } = args;
+  return rest;
+}
+
+export function joinTextBlocks(content) {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return '';
+  }
+  return content
+    .filter((block) => block?.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text)
+    .join('\n');
+}
+
 export function noteTime(agent, timeMs) {
   if (agent.startMs === null || timeMs < agent.startMs) {
     agent.startMs = timeMs;
   }
   if (agent.endMs === null || timeMs > agent.endMs) {
     agent.endMs = timeMs;
+  }
+}
+
+function realpathOrSelf(directory) {
+  try {
+    return realpathSync(directory);
+  } catch {
+    return resolve(directory);
   }
 }
 

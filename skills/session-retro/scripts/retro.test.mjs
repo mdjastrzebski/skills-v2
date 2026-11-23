@@ -1,9 +1,18 @@
 import { after, test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
 const script = fileURLToPath(new URL('./retro.mjs', import.meta.url));
@@ -308,9 +317,6 @@ test('prints usage for --help', () => {
 
 const CURSOR_SESSION_ID = '019b0000-0000-7000-8000-00000000000c';
 const CURSOR_CHILD_ID = '019b0000-0000-7000-8000-00000000000d';
-const cursorSqlite = await import('node:sqlite')
-  .then((module) => module.DatabaseSync)
-  .catch(() => null);
 
 test('prints repeats for a Cursor transcript file', () => {
   const env = setup();
@@ -330,101 +336,168 @@ test('prints repeats for a Cursor transcript file', () => {
   assert.match(splitSections(result.stdout).Repeats, /- 2x \[main\] Read: `\/repo\/a\.ts`/);
 });
 
-test(
-  'prints all sections for a Cursor session and labels the subagent',
-  { skip: !cursorSqlite },
-  () => {
-    const env = setup();
-    writeCursorSession(env, cursorSqlite);
-    const result = run(env, []);
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, new RegExp(`Session: ${CURSOR_SESSION_ID}`));
-    assert.match(result.stdout, /Harness: Cursor/);
-    assert.match(result.stdout, /Agents: main \+ 1 subagent/);
-    const sections = splitSections(result.stdout);
-    assert.deepEqual(Object.keys(sections), SECTIONS.map(headingName));
-    assert.match(
-      sections['Failed tool calls'],
-      /\[subagent: Find config files\] Grep: `config` -> Path does not exist/,
-    );
-    assert.match(sections['Token hotspots'], /\[main\] Read: `\/repo\/src\/big\.ts`/);
-    assert.match(
-      sections['Time hotspots'],
-      /Slowest subagents:\n- 40s \[subagent: Find config files\]/,
-    );
-  },
-);
-
-test(
-  'shows a failed command retried twice in failed calls and repeats (Cursor)',
-  { skip: !cursorSqlite },
-  () => {
-    const env = setup();
-    writeCursorSession(env, cursorSqlite);
-    const sections = splitSections(run(env, []).stdout);
-    const failedLines = sections['Failed tool calls']
-      .split('\n')
-      .filter((line) => line.includes('Shell: `pnpm test`'));
-    assert.equal(failedLines.length, 2);
-    assert.match(failedLines[0], /-> exit code 1 … FAIL src\/a\.test\.mjs/);
-    assert.match(sections.Repeats, /- 3x \[main\] Shell: `pnpm test` \(2 failed\)/);
-  },
-);
-
-test('reports a Cursor feedback loop with edited files', { skip: !cursorSqlite }, () => {
+test('prints all sections for a Cursor session and labels the subagent', () => {
   const env = setup();
-  writeCursorLoopSession(env, cursorSqlite);
+  writeCursorSession(env);
+  const result = run(env, []);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, new RegExp(`Session: ${CURSOR_SESSION_ID}`));
+  assert.match(result.stdout, /Harness: Cursor/);
+  assert.match(result.stdout, /Agents: main \+ 1 subagent/);
+  const sections = splitSections(result.stdout);
+  assert.deepEqual(Object.keys(sections), SECTIONS.map(headingName));
+  assert.match(
+    sections['Failed tool calls'],
+    /\[subagent: Find config files\] Grep: `config` -> Path does not exist/,
+  );
+  assert.match(sections['Token hotspots'], /\[main\] Read: `\/repo\/src\/big\.ts`/);
+  assert.match(
+    sections['Time hotspots'],
+    /Slowest subagents \(Cursor: model time is not recorded\):\n- ≥40s \[subagent: Find config files\]/,
+  );
+});
+
+test('shows a failed command retried twice in failed calls and repeats (Cursor)', () => {
+  const env = setup();
+  writeCursorSession(env);
+  const sections = splitSections(run(env, []).stdout);
+  const failedLines = sections['Failed tool calls']
+    .split('\n')
+    .filter((line) => line.includes('Shell: `pnpm test`'));
+  assert.equal(failedLines.length, 2);
+  assert.match(failedLines[0], /-> exit code 1 … FAIL src\/a\.test\.mjs/);
+  assert.match(sections.Repeats, /- 3x \[main\] Shell: `pnpm test` \(2 failed\)/);
+});
+
+test('reports a Cursor feedback loop with edited files', () => {
+  const env = setup();
+  writeCursorLoopSession(env);
   const result = run(env, [CURSOR_SESSION_ID]);
   assert.equal(result.status, 0, result.stderr);
   const lines = splitSections(result.stdout)['Feedback loops'].split('\n').slice(1);
   assert.deepEqual(lines, [
-    '- 3x [main] `pnpm test`: fail fail pass; cycle avg 45s, longest 1m 0s; run avg 20s; files changed between runs: a.ts, b.ts',
+    '- 3x [main] `pnpm test`: fail fail pass; cycle avg ≥45s, longest ≥1m 0s; run avg 20s; files changed between runs: a.ts, b.ts',
   ]);
 });
 
-test(
-  'reports Cursor thinking spans as model gaps and drops duplicates',
-  { skip: !cursorSqlite },
-  () => {
-    const env = setup();
-    const startMs = Date.parse('2026-11-20T10:00:05.000Z');
-    const span = thinkingBlob('Let me write the reader', startMs, startMs + 45_000);
-    const store = cursorStorePath(env, CURSOR_SESSION_ID);
-    writeCursorStore(cursorSqlite, store, [
-      cursorUser('2026-11-20T10:00:00.000Z', 'Add the reader'),
-      span,
-      span,
-      Buffer.from([0, 1, 2, 3, 4]),
-      thinkingBlob('Short note', startMs + 60_000, startMs + 61_000),
-    ]);
-    writeFileSync(
-      join(dirname(store), 'meta.json'),
-      JSON.stringify({ cwd: env.cwd, title: 'Think', createdAtMs: 1, updatedAtMs: 2 }),
-    );
-    const result = run(env, []);
-    assert.equal(result.status, 0, result.stderr);
-    const timeSection = splitSections(result.stdout)['Time hotspots'];
-    const lines = timeSection
-      .split('\n')
-      .filter((line) => line.includes('before Let me write the reader'));
-    assert.deepEqual(lines, ['- 45s [main] at 10:00:05 UTC, before Let me write the reader']);
-  },
-);
+test('reports Cursor thinking spans as model gaps and drops duplicates', () => {
+  const env = setup();
+  const startMs = Date.parse('2026-11-20T10:00:05.000Z');
+  const span = thinkingBlob('Let me write the reader', startMs, startMs + 45_000);
+  const store = cursorStorePath(env, CURSOR_SESSION_ID);
+  writeCursorStore(store, [
+    cursorUser('2026-11-20T10:00:00.000Z', 'Add the reader'),
+    span,
+    span,
+    Buffer.from([0, 1, 2, 3, 4]),
+    thinkingBlob('Short note', startMs + 60_000, startMs + 61_000),
+  ]);
+  writeFileSync(
+    join(dirname(store), 'meta.json'),
+    JSON.stringify({ cwd: env.cwd, title: 'Think', createdAtMs: 1, updatedAtMs: 2 }),
+  );
+  const result = run(env, []);
+  assert.equal(result.status, 0, result.stderr);
+  const timeSection = splitSections(result.stdout)['Time hotspots'];
+  const lines = timeSection
+    .split('\n')
+    .filter((line) => line.includes('before Let me write the reader'));
+  assert.deepEqual(lines, ['- 45s [main] at 10:00:05 UTC, before Let me write the reader']);
+});
 
-test(
-  'selects a newer Cursor session ahead of Claude Code and Codex',
-  { skip: !cursorSqlite },
-  () => {
-    const env = setup();
-    const claudeFile = writeClaudeSession(env);
-    const { mainFile } = writeCodexSession(env);
-    const cursorFile = writeCursorSession(env, cursorSqlite);
-    setModifiedTime(claudeFile, 1000);
-    setModifiedTime(mainFile, 2000);
-    setModifiedTime(cursorFile, 3000);
-    assert.match(run(env, []).stdout, /Harness: Cursor/);
-  },
-);
+test('selects a newer Cursor session ahead of Claude Code and Codex', () => {
+  const env = setup();
+  const claudeFile = writeClaudeSession(env);
+  const { mainFile } = writeCodexSession(env);
+  const cursorFile = writeCursorSession(env);
+  setModifiedTime(claudeFile, 1000);
+  setModifiedTime(mainFile, 2000);
+  setModifiedTime(cursorFile, 3000);
+  assert.match(run(env, []).stdout, /Harness: Cursor/);
+});
+
+test('finds a Claude Code session from a symlinked working directory', () => {
+  const env = setup();
+  const link = join(env.root, 'project-link');
+  symlinkSync(env.cwd, link);
+  const file = claudeSessionFile({ ...env, cwd: link }, CLAUDE_SESSION_ID);
+  writeJsonl(file, [
+    claudeUser('2026-11-20T10:00:00.000Z', 'Say hello'),
+    claudeAssistant('2026-11-20T10:00:01.000Z', 'msg_1', [{ type: 'text', text: 'Hello' }]),
+  ]);
+  const result = run(env, [], { cwd: link });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Harness: Claude Code/);
+});
+
+test('selects a Cursor session by its meta update time', () => {
+  const env = setup();
+  const claudeFile = writeClaudeSession(env);
+  const store = writeCursorSession(env);
+  setModifiedTime(claudeFile, 2000);
+  setModifiedTime(store, 1000);
+  writeFileSync(
+    join(dirname(store), 'meta.json'),
+    JSON.stringify({ cwd: env.cwd, title: 'Fix tests', updatedAtMs: 3_000_000 }),
+  );
+  assert.match(run(env, []).stdout, /Harness: Cursor/);
+});
+
+test('prints unknown Cursor times when the session has no timestamps', () => {
+  const env = setup();
+  const store = cursorStorePath(env, CURSOR_SESSION_ID);
+  const messages = [{ role: 'user', content: [{ type: 'text', text: 'Run tests' }] }];
+  for (let index = 0; index < 3; index += 1) {
+    messages.push(cursorAssistant(`call_run_${index}`, 'Shell', { command: 'pnpm test' }));
+    messages.push(
+      cursorTool(`call_run_${index}`, 'Shell', 'Exit code: 1', {
+        exitCode: 1,
+        command: 'pnpm test',
+        localExecutionTimeMs: 5000,
+      }),
+    );
+    messages.push(cursorAssistant(`call_edit_${index}`, 'Write', { path: '/repo/a.ts' }));
+    messages.push(cursorTool(`call_edit_${index}`, 'Write', 'ok', {}));
+  }
+  writeCursorStore(store, messages);
+  writeFileSync(join(dirname(store), 'meta.json'), JSON.stringify({ cwd: env.cwd }));
+  const result = run(env, []);
+  assert.equal(result.status, 0, result.stderr);
+  const sections = splitSections(result.stdout);
+  assert.match(sections['Feedback loops'], /fail fail fail; cycle unknown; run avg 5s;/);
+  assert.match(sections['Time hotspots'], /\(Cursor: thinking time only\):\nnone\n/);
+});
+
+test('fails with a clear message for a Cursor store without message blobs', () => {
+  const env = setup();
+  const store = cursorStorePath(env, CURSOR_SESSION_ID);
+  writeCursorStore(store, [Buffer.from([0, 1, 2, 3])]);
+  const result = run(env, [store]);
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /1 blobs but no JSON message blob\. The Cursor store format may have changed/,
+  );
+});
+
+test('fails with a clear message for a Cursor tool call without an ID', () => {
+  const env = setup();
+  const store = cursorStorePath(env, CURSOR_SESSION_ID);
+  writeCursorStore(store, [
+    cursorUser('2026-11-20T10:00:00.000Z', 'Read'),
+    { role: 'assistant', content: [{ type: 'tool-call', toolName: 'Read', args: {} }] },
+  ]);
+  const result = run(env, [store]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /a tool row has no toolCallId/);
+});
+
+test('treats a .db file that is not store.db as a session ID', () => {
+  const env = setup();
+  const result = run(env, ['other.db']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Unknown session ID: other\.db/);
+});
 
 function setup() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'session-retro-test-')));
@@ -443,7 +516,8 @@ function setup() {
   return env;
 }
 
-function run(env, args) {
+function run(env, args, options = {}) {
+  const cwd = options.cwd ?? env.cwd;
   const childEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (!key.startsWith('GIT_')) {
@@ -457,9 +531,10 @@ function run(env, args) {
     CURSOR_HOME: env.cursorHome,
     GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_CONFIG_NOSYSTEM: '1',
+    PWD: cwd,
   });
   return spawnSync(process.execPath, [script, ...args], {
-    cwd: env.cwd,
+    cwd,
     env: childEnv,
     encoding: 'utf8',
   });
@@ -854,11 +929,11 @@ function cursorTranscriptAssistant(timestamp, content) {
   return { role: 'assistant', message: { content } };
 }
 
-function writeCursorSession(env, DatabaseSync) {
+function writeCursorSession(env) {
   const store = cursorStorePath(env, CURSOR_SESSION_ID);
   const bigOutput = 'export const value = 1;\n'.repeat(2000);
   const failure = 'Exit code: 1\n\nCommand output:\n\n```\nFAIL src/a.test.mjs';
-  writeCursorStore(DatabaseSync, store, [
+  writeCursorStore(store, [
     cursorUser('2026-11-20T10:00:00.000Z', 'Fix the failing test'),
     cursorAssistant('call_1', 'Shell', { command: 'pnpm test', description: 'Run tests' }),
     cursorTool('call_1', 'Shell', failure, { exitCode: 1, command: 'pnpm test' }),
@@ -879,7 +954,7 @@ function writeCursorSession(env, DatabaseSync) {
   );
 
   const childStore = cursorStorePath(env, CURSOR_CHILD_ID);
-  writeCursorStore(DatabaseSync, childStore, [
+  writeCursorStore(childStore, [
     cursorUser('2026-11-20T10:01:00.000Z', 'Find config files'),
     cursorAssistant('call_g', 'Grep', { pattern: 'config', path: '/repo/missing' }),
     cursorTool('call_g', 'Grep', 'Path does not exist', {
@@ -916,7 +991,7 @@ function writeCursorSession(env, DatabaseSync) {
   return store;
 }
 
-function writeCursorLoopSession(env, DatabaseSync) {
+function writeCursorLoopSession(env) {
   const store = cursorStorePath(env, CURSOR_SESSION_ID);
   const commands = [
     'pnpm test',
@@ -956,7 +1031,7 @@ function writeCursorLoopSession(env, DatabaseSync) {
       }
     }
   }
-  writeCursorStore(DatabaseSync, store, messages);
+  writeCursorStore(store, messages);
   writeFileSync(
     join(dirname(store), 'meta.json'),
     JSON.stringify({ cwd: env.cwd, title: 'Loop', createdAtMs: 1, updatedAtMs: 2 }),
@@ -964,7 +1039,7 @@ function writeCursorLoopSession(env, DatabaseSync) {
   return store;
 }
 
-function writeCursorStore(DatabaseSync, file, messages) {
+function writeCursorStore(file, messages) {
   mkdirSync(dirname(file), { recursive: true });
   const database = new DatabaseSync(file);
   database.exec('CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB)');

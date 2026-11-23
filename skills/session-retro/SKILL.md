@@ -13,13 +13,13 @@ description: Use when the user asks for a retrospective of this agent session (o
      - What worked and what did not.
      - Drift: did the attempts go in a weird or unproductive direction just to reach the goal (hacks, weakened tests, workarounds, scope change)?
      - Feedback-loop speed: fast or slow, and why.
-2. **Get script signals.** Run from the session's working directory:
+2. **Get script signals.** Pass the session ID when you know it. In Claude Code, the ID of this session is `${CLAUDE_SESSION_ID}`. In other harnesses, run with no argument from the session's working directory:
 
    ```sh
    node <skill-base-dir>/scripts/retro.mjs [session-id | path/to/session.jsonl]
    ```
 
-   With no argument, the script selects the latest main session for the current directory (Claude Code, Codex, or Cursor) with its subagents. It prints failed tool calls, repeats, token hotspots, time hotspots, and feedback loops (the same command run 3 or more times). The feedback loops are evidence for your goal loops. You judge drift from your own context. The script does not.
+   With no argument, the script selects the latest main session for the current directory (Claude Code, Codex, or Cursor) with its subagents. This can be a different session if more than one session runs in the same directory. It prints failed tool calls, repeats, token hotspots, time hotspots, and feedback loops (the same command run 3 or more times). The feedback loops are evidence for your goal loops. You judge drift from your own context. The script does not.
 
    If the script fails or finds no session, tell the user in one line: `No script signals: <reason>`. Then continue with your own reflection only. Do not search for transcripts in other places.
 

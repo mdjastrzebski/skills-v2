@@ -1,15 +1,20 @@
 import { createRequire } from 'node:module';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import {
   createAgent,
+  createCall,
+  describeArgs,
+  isOneOfDirectories,
+  joinTextBlocks,
   noteTime,
   oneLine,
   readJsonFile,
   readJsonl,
   readFirstJsonLine,
   summarizeError,
+  withoutDescription,
 } from './transcript.mjs';
 
 const require = createRequire(import.meta.url);
@@ -42,18 +47,19 @@ const MONTHS = {
   dec: 11,
 };
 
-export function listCursorMainSessions(cwd) {
+export function listCursorMainSessions(directories) {
   const subagentIds = listSubagentIds();
-  const files = [];
+  const sessions = [];
   for (const dir of listChatSessionDirs()) {
     const meta = readJsonFile(join(dir, 'meta.json'));
     const store = join(dir, 'store.db');
-    if (meta.cwd !== cwd || subagentIds.has(basename(dir)) || !existsSync(store)) {
+    const isMain = isOneOfDirectories(meta.cwd, directories) && !subagentIds.has(basename(dir));
+    if (!isMain || !existsSync(store)) {
       continue;
     }
-    files.push(store);
+    sessions.push({ file: store, updatedMs: getStoreUpdatedMs(store, meta) });
   }
-  return files;
+  return sessions;
 }
 
 export function findCursorSessionById(sessionId) {
@@ -70,13 +76,30 @@ export function isCursorTranscript(file) {
 
 export function readCursorSession(sessionFile) {
   const resolved = resolveSession(sessionFile);
+  if (resolved.messages.length === 0 && resolved.blobCount > 0) {
+    throw new Error(
+      `Bad Cursor store ${sessionFile}: ${resolved.blobCount} blobs but no JSON message blob. The Cursor store format may have changed.`,
+    );
+  }
   if (resolved.messages.length === 0) {
-    throw new Error(`Bad transcript file ${sessionFile}: no valid JSON lines`);
+    throw new Error(`Bad transcript file ${sessionFile}: no messages`);
   }
   const mainAgent = messagesToAgent(resolved.messages, 'main', true);
   applyModelSpans(mainAgent, resolved.spans);
   const subagents = loadSubagents(resolved.id, resolved.cwd, resolved.transcriptFile);
   return { id: resolved.id, harness: 'Cursor', agents: [mainAgent, ...subagents] };
+}
+
+function getStoreUpdatedMs(store, meta) {
+  const times = [statSync(store).mtimeMs];
+  const writeAheadLog = `${store}-wal`;
+  if (existsSync(writeAheadLog)) {
+    times.push(statSync(writeAheadLog).mtimeMs);
+  }
+  if (typeof meta.updatedAtMs === 'number') {
+    times.push(meta.updatedAtMs);
+  }
+  return Math.max(...times);
 }
 
 function getCursorHome() {
@@ -188,6 +211,7 @@ function resolveSession(sessionFile) {
       cwd: meta.cwd ?? null,
       messages: stored.messages,
       spans: stored.spans,
+      blobCount: stored.blobCount,
       transcriptFile: findTranscriptFile(id),
     };
   }
@@ -201,6 +225,7 @@ function resolveSession(sessionFile) {
       cwd: meta.cwd ?? null,
       messages: stored.messages,
       spans: stored.spans,
+      blobCount: stored.blobCount,
       transcriptFile: sessionFile,
     };
   }
@@ -209,6 +234,7 @@ function resolveSession(sessionFile) {
     cwd: null,
     messages: readTranscriptMessages(sessionFile),
     spans: [],
+    blobCount: 0,
     transcriptFile: sessionFile,
   };
 }
@@ -291,7 +317,7 @@ function readStore(file) {
       seenSpans.add(key);
       spans.push(span);
     }
-    return { messages, spans };
+    return { messages, spans, blobCount: rows.length };
   } catch (error) {
     throw new Error(`Cannot read transcript file ${file}: ${error.message}`, { cause: error });
   } finally {
@@ -486,7 +512,7 @@ function readTranscriptMessages(file) {
 }
 
 function messagesToAgent(messages, label, isMain) {
-  const agent = createAgent(label, isMain);
+  const agent = createAgent(label, isMain, 'partial');
   const callsById = new Map();
   const state = { clock: null, elapsed: 0 };
   for (const message of messages) {
@@ -498,11 +524,14 @@ function messagesToAgent(messages, label, isMain) {
       readToolMessage(message, agent, state, callsById);
     }
   }
+  if (state.clock === null) {
+    agent.timing = 'none';
+  }
   return agent;
 }
 
 function readUserMessage(message, agent, state) {
-  const timeMs = userTimeOf(textOf(message.content));
+  const timeMs = userTimeOf(joinTextBlocks(message.content));
   if (timeMs !== null) {
     anchor(agent, state, timeMs);
   }
@@ -523,25 +552,21 @@ function readAssistantMessage(message, agent, state, callsById) {
     return;
   }
   for (const block of toolCalls) {
-    const tool = block.toolName ?? block.name ?? '?';
+    const tool = requireField(block.toolName ?? block.name, 'toolName', agent);
+    const callId = requireField(block.toolCallId ?? block.id, 'toolCallId', agent);
     const args = normalizeArgs(block.args ?? block.input);
-    const callId = block.toolCallId ?? block.id ?? `${tool}-${callsById.size}`;
     if (callsById.has(callId)) {
       continue;
     }
     const startMs = currentTime(state);
-    const call = {
+    const call = createCall({
       tool,
-      input: describeInput(args),
-      repeatKey: `${tool}\u0000${repeatInput(args)}`,
+      input: describeArgs(args, INPUT_KEYS),
+      repeatInput: JSON.stringify(withoutDescription(args) ?? null),
       startMs,
-      endMs: null,
-      failed: false,
-      error: '',
-      outputChars: 0,
       shellCommand: shellCommandOf(tool, args),
       editedFiles: editedFilesOf(tool, args),
-    };
+    });
     callsById.set(callId, call);
     agent.calls.push(call);
     agent.steps.push({ timeMs: startMs, kind: 'model', call });
@@ -556,7 +581,8 @@ function readToolMessage(message, agent, state, callsById) {
   if (!block) {
     return;
   }
-  const call = callsById.get(block.toolCallId ?? block.tool_use_id);
+  const callId = requireField(block.toolCallId ?? block.tool_use_id, 'toolCallId', agent);
+  const call = callsById.get(callId);
   if (!call) {
     return;
   }
@@ -574,6 +600,15 @@ function readToolMessage(message, agent, state, callsById) {
     noteTime(agent, call.endMs);
   }
   agent.steps.push({ timeMs: call.endMs ?? call.startMs, kind: 'tool_result' });
+}
+
+function requireField(value, field, agent) {
+  if (typeof value !== 'string' || value === '') {
+    throw new Error(
+      `Bad Cursor session (${agent.label}): a tool row has no ${field}. The Cursor store format may have changed.`,
+    );
+  }
+  return value;
 }
 
 function anchor(agent, state, timeMs) {
@@ -671,16 +706,10 @@ function commandOutput(text) {
 }
 
 function resultText(result) {
-  if (typeof result === 'string') {
-    return result;
+  if (result === undefined || typeof result === 'string' || Array.isArray(result)) {
+    return joinTextBlocks(result);
   }
-  if (Array.isArray(result)) {
-    return result
-      .filter((block) => block?.type === 'text' && typeof block.text === 'string')
-      .map((block) => block.text)
-      .join('\n');
-  }
-  return result === undefined ? '' : JSON.stringify(result);
+  return JSON.stringify(result);
 }
 
 function normalizeArgs(value) {
@@ -698,29 +727,6 @@ function normalizeArgs(value) {
   return value;
 }
 
-function describeInput(args) {
-  if (typeof args === 'string') {
-    return oneLine(args);
-  }
-  if (!args || typeof args !== 'object') {
-    return oneLine(args);
-  }
-  for (const key of INPUT_KEYS) {
-    if (typeof args[key] === 'string') {
-      return oneLine(args[key]);
-    }
-  }
-  return oneLine(JSON.stringify(args));
-}
-
-function repeatInput(args) {
-  if (!args || typeof args !== 'object') {
-    return JSON.stringify(args ?? null);
-  }
-  const { description: _description, ...rest } = args;
-  return JSON.stringify(rest);
-}
-
 function shellCommandOf(tool, args) {
   if (!SHELL_TOOLS.has(tool) || !args || typeof args !== 'object') {
     return null;
@@ -735,19 +741,6 @@ function editedFilesOf(tool, args) {
   }
   const file = args.path ?? args.file_path ?? args.notebook_path ?? args.target_file;
   return typeof file === 'string' ? [file] : [];
-}
-
-function textOf(content) {
-  if (typeof content === 'string') {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return '';
-  }
-  return content
-    .filter((block) => block?.type === 'text' && typeof block.text === 'string')
-    .map((block) => block.text)
-    .join('\n');
 }
 
 function userTimeOf(text) {
@@ -778,10 +771,15 @@ function parseEnglishTime(raw) {
   if (match[6].toUpperCase() === 'PM') {
     hour += 12;
   }
-  const utc = Date.UTC(Number(match[3]), month, Number(match[2]), hour, Number(match[5]));
+  const year = Number(match[3]);
+  const day = Number(match[2]);
+  const minute = Number(match[5]);
+  if (!match[7]) {
+    return new Date(year, month, day, hour, minute).getTime();
+  }
   const sign = match[7] === '-' ? -1 : 1;
-  const offsetMinutes = match[7] ? sign * (Number(match[8]) * 60 + Number(match[9] ?? 0)) : 0;
-  return utc - offsetMinutes * 60 * 1000;
+  const offsetMinutes = sign * (Number(match[8]) * 60 + Number(match[9] ?? 0));
+  return Date.UTC(year, month, day, hour, minute) - offsetMinutes * 60 * 1000;
 }
 
 function labelFromMessages(messages, fallback) {
@@ -789,7 +787,7 @@ function labelFromMessages(messages, fallback) {
     if (message.role !== 'user') {
       continue;
     }
-    const text = textOf(message.content)
+    const text = joinTextBlocks(message.content)
       .replace(/<timestamp>[\s\S]*?<\/timestamp>/g, '')
       .trim();
     const query = text.match(/<user_query>\s*([\s\S]*?)\s*<\/user_query>/);

@@ -1,15 +1,18 @@
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import {
   createAgent,
+  createCall,
+  describeArgs,
+  joinTextBlocks,
   noteTime,
-  oneLine,
   parseTime,
   readJsonFile,
   readJsonl,
   readTranscript,
   summarizeError,
+  withoutDescription,
 } from './transcript.mjs';
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
@@ -26,14 +29,23 @@ const INPUT_KEYS = [
   'prompt',
 ];
 
-export function listClaudeSessions(cwd) {
-  const projectDir = join(getProjectsDir(), cwd.replace(/[^a-zA-Z0-9]/g, '-'));
-  if (!existsSync(projectDir)) {
-    return [];
+export function listClaudeSessions(directories) {
+  const projectDirs = new Set(
+    directories.map((directory) => join(getProjectsDir(), directory.replace(/[^a-zA-Z0-9]/g, '-'))),
+  );
+  const sessions = [];
+  for (const projectDir of projectDirs) {
+    if (!existsSync(projectDir)) {
+      continue;
+    }
+    for (const fileName of readdirSync(projectDir)) {
+      if (fileName.endsWith('.jsonl')) {
+        const file = join(projectDir, fileName);
+        sessions.push({ file, updatedMs: statSync(file).mtimeMs });
+      }
+    }
   }
-  return readdirSync(projectDir)
-    .filter((fileName) => fileName.endsWith('.jsonl'))
-    .map((fileName) => join(projectDir, fileName));
+  return sessions;
 }
 
 export function findClaudeSessionById(sessionId) {
@@ -132,18 +144,14 @@ function readAssistantEntry(entry, timeMs, agent, callsById, usageByMessage) {
     if (callsById.has(block.id)) {
       continue;
     }
-    const call = {
+    const call = createCall({
       tool: block.name ?? '?',
-      input: describeInput(block.input),
-      repeatKey: `${block.name}\u0000${JSON.stringify(withoutDescription(block.input))}`,
+      input: describeArgs(block.input, INPUT_KEYS),
+      repeatInput: JSON.stringify(withoutDescription(block.input)),
       startMs: timeMs,
-      endMs: null,
-      failed: false,
-      error: '',
-      outputChars: 0,
       shellCommand: getShellCommand(block),
       editedFiles: getEditedFiles(block),
-    };
+    });
     callsById.set(block.id, call);
     agent.calls.push(call);
     agent.steps.push({ timeMs, kind: 'model', call });
@@ -165,7 +173,7 @@ function readUserEntry(entry, timeMs, agent, callsById) {
     if (!call) {
       continue;
     }
-    const text = getResultText(block.content);
+    const text = joinTextBlocks(block.content);
     call.endMs = timeMs;
     call.outputChars = text.length;
     if (block.is_error === true) {
@@ -173,31 +181,6 @@ function readUserEntry(entry, timeMs, agent, callsById) {
       call.error = summarizeError(text.replace(/<\/?tool_use_error>/g, ''));
     }
   }
-}
-
-function getResultText(content) {
-  if (typeof content === 'string') {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return '';
-  }
-  return content
-    .filter((block) => block?.type === 'text' && typeof block.text === 'string')
-    .map((block) => block.text)
-    .join('\n');
-}
-
-function describeInput(input) {
-  if (input === null || typeof input !== 'object') {
-    return oneLine(input);
-  }
-  for (const key of INPUT_KEYS) {
-    if (typeof input[key] === 'string') {
-      return oneLine(input[key]);
-    }
-  }
-  return oneLine(JSON.stringify(input));
 }
 
 function getShellCommand(block) {
@@ -211,14 +194,6 @@ function getEditedFiles(block) {
   }
   const file = block.input?.file_path ?? block.input?.notebook_path;
   return typeof file === 'string' ? [file] : [];
-}
-
-function withoutDescription(input) {
-  if (input === null || typeof input !== 'object') {
-    return input;
-  }
-  const { description: _description, ...rest } = input;
-  return rest;
 }
 
 function sumUsage(usages) {

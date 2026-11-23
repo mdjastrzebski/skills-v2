@@ -1,7 +1,11 @@
+import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import {
   createAgent,
+  createCall,
+  isOneOfDirectories,
+  joinTextBlocks,
   listJsonlFiles,
   noteTime,
   oneLine,
@@ -17,14 +21,16 @@ const OUTPUT_TYPES = new Set(['function_call_output', 'custom_tool_call_output']
 const SHELL_TOOLS = new Set(['exec_command', 'shell', 'shell_command']);
 const MODEL_TYPES = new Set(['reasoning', 'web_search_call', 'local_shell_call']);
 
+let codexSessions = null;
+
 export function isCodexTranscript(file) {
   return readFirstJsonLine(file)?.type === 'session_meta';
 }
 
-export function listCodexMainSessions(cwd) {
+export function listCodexMainSessions(directories) {
   return listCodexSessions()
-    .filter(({ meta }) => meta.cwd === cwd && !isSubagentMeta(meta))
-    .map(({ file }) => file);
+    .filter(({ meta }) => isOneOfDirectories(meta.cwd, directories) && !isSubagentMeta(meta))
+    .map(({ file }) => ({ file, updatedMs: statSync(file).mtimeMs }));
 }
 
 export function findCodexSessionById(sessionId) {
@@ -62,14 +68,17 @@ function listCodexFiles() {
 }
 
 function listCodexSessions() {
-  const sessions = [];
+  if (codexSessions !== null) {
+    return codexSessions;
+  }
+  codexSessions = [];
   for (const file of listCodexFiles()) {
     const firstLine = readFirstJsonLine(file);
     if (firstLine?.type === 'session_meta' && firstLine.payload) {
-      sessions.push({ file, meta: firstLine.payload });
+      codexSessions.push({ file, meta: firstLine.payload });
     }
   }
-  return sessions;
+  return codexSessions;
 }
 
 function findDescendants(rootId, rootFile) {
@@ -157,18 +166,14 @@ function addCall(payload, timeMs, agent, callsById) {
   const tool = payload.name ?? '?';
   const rawInput = payload.type === 'custom_tool_call' ? payload.input : payload.arguments;
   const args = parseArguments(rawInput);
-  const call = {
+  const call = createCall({
     tool,
     input: describeInput(tool, args, rawInput),
-    repeatKey: `${tool}\u0000${getRepeatInput(tool, args, rawInput)}`,
+    repeatInput: getRepeatInput(args, rawInput),
     startMs: timeMs,
-    endMs: null,
-    failed: false,
-    error: '',
-    outputChars: 0,
     shellCommand: SHELL_TOOLS.has(tool) ? getCommand(args) || null : null,
     editedFiles: tool === 'apply_patch' ? getPatchFiles(args, rawInput) : [],
-  };
+  });
   callsById.set(callId, call);
   agent.calls.push(call);
   agent.steps.push({ timeMs, kind: 'model', call });
@@ -217,7 +222,7 @@ function readEvent(payload, agent, failuresById) {
     if (result.Err !== undefined) {
       failuresById.set(payload.call_id, summarizeError(JSON.stringify(result.Err)));
     } else if (result.Ok?.isError === true) {
-      failuresById.set(payload.call_id, summarizeError(getMcpText(result.Ok)));
+      failuresById.set(payload.call_id, summarizeError(joinTextBlocks(result.Ok.content)));
     }
   } else if (payload.type === 'patch_apply_end' && payload.success === false) {
     failuresById.set(payload.call_id, summarizeError(payload.stderr || payload.stdout));
@@ -235,14 +240,6 @@ function applyFailures(callsById, failuresById) {
       call.error = error;
     }
   }
-}
-
-function getMcpText(result) {
-  const content = Array.isArray(result.content) ? result.content : [];
-  return content
-    .filter((block) => typeof block?.text === 'string')
-    .map((block) => block.text)
-    .join('\n');
 }
 
 function parseArguments(rawInput) {
@@ -280,7 +277,7 @@ function getPatchFiles(args, rawInput) {
   return [...new Set([...matches].map((match) => match[1].trim()))];
 }
 
-function getRepeatInput(tool, args, rawInput) {
+function getRepeatInput(args, rawInput) {
   const command = getCommand(args);
   if (command) {
     return `${command}\u0000${args.workdir ?? ''}`;

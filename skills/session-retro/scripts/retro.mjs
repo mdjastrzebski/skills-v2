@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, statSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import { findClaudeSessionById, listClaudeSessions, readClaudeSession } from './claude.mjs';
 import {
@@ -15,7 +15,7 @@ import {
   readCursorSession,
 } from './cursor.mjs';
 import { findFeedbackLoops, normalizeCommand } from './loops.mjs';
-import { oneLine } from './transcript.mjs';
+import { getCurrentDirectories, oneLine } from './transcript.mjs';
 
 const TOP_ITEMS = 5;
 const CHARS_PER_TOKEN = 4;
@@ -55,7 +55,7 @@ function selectSessionFile(args) {
   }
   const argument = args[0];
   if (argument === undefined || argument === '') {
-    return findLatestSessionFile(process.cwd());
+    return findLatestSessionFile(getCurrentDirectories());
   }
   if (argument.startsWith('-')) {
     throw new Error(`Unknown option: ${argument}. See --help.`);
@@ -78,19 +78,18 @@ function selectSessionFile(args) {
   return sessionFile;
 }
 
-function findLatestSessionFile(cwd) {
+function findLatestSessionFile(directories) {
   const candidates = [
-    ...listCodexMainSessions(cwd),
-    ...listClaudeSessions(cwd),
-    ...listCursorMainSessions(cwd),
+    ...listCodexMainSessions(directories),
+    ...listClaudeSessions(directories),
+    ...listCursorMainSessions(directories),
   ];
   if (candidates.length === 0) {
     throw new Error(
-      `No Claude Code, Codex, or Cursor session found for the current directory: ${cwd}`,
+      `No Claude Code, Codex, or Cursor session found for the current directory: ${directories.join(', ')}`,
     );
   }
-  const dated = candidates.map((file) => ({ file, mtimeMs: statSync(file).mtimeMs }));
-  const sorted = dated.toSorted((a, b) => b.mtimeMs - a.mtimeMs);
+  const sorted = candidates.toSorted((a, b) => b.updatedMs - a.updatedMs);
   return sorted[0].file;
 }
 
@@ -105,13 +104,13 @@ function readSession(sessionFile) {
 }
 
 function isSessionPath(argument) {
-  return (
-    argument.endsWith('.jsonl') || argument.endsWith('.db') || basename(argument) === 'meta.json'
-  );
+  const name = basename(argument);
+  return name.endsWith('.jsonl') || name === 'store.db' || name === 'meta.json';
 }
 
 function formatReport(session) {
   const subagentCount = session.agents.length - 1;
+  const loops = findFeedbackLoops(session.agents);
   const lines = [
     `Session: ${session.id}`,
     `Harness: ${session.harness}`,
@@ -120,13 +119,13 @@ function formatReport(session) {
     '',
     ...formatFailedCalls(session.agents),
     '',
-    ...formatRepeats(session.agents),
+    ...formatRepeats(session.agents, loops),
     '',
     ...formatTokenHotspots(session.agents),
     '',
     ...formatTimeHotspots(session.agents, session.harness),
     '',
-    ...formatFeedbackLoops(session.agents),
+    ...formatFeedbackLoops(loops),
   ];
   return lines.join('\n');
 }
@@ -146,8 +145,8 @@ function formatFailedCalls(agents) {
   return lines;
 }
 
-function formatRepeats(agents) {
-  const loopCommands = getLoopCommandsByAgent(agents);
+function formatRepeats(agents, loops) {
+  const loopCommands = getLoopCommandsByAgent(loops);
   const repeats = [];
   for (const agent of agents) {
     const groups = new Map();
@@ -175,9 +174,9 @@ function formatRepeats(agents) {
   ];
 }
 
-function getLoopCommandsByAgent(agents) {
+function getLoopCommandsByAgent(loops) {
   const commandsByAgent = new Map();
-  for (const loop of findFeedbackLoops(agents)) {
+  for (const loop of loops) {
     const commands = commandsByAgent.get(loop.agent) ?? new Set();
     commands.add(loop.command);
     commandsByAgent.set(loop.agent, commands);
@@ -234,25 +233,29 @@ function formatTimeHotspots(agents, harness) {
         `- ${formatDuration(gap.durationMs)} ${formatAgent(agent)} at ${formatClock(gap.startMs)}, before ${gap.label}`,
     );
   const slowestSubagents = agents
-    .filter((agent) => !agent.isMain && agent.startMs !== null && agent.endMs > agent.startMs)
+    .filter((agent) => !agent.isMain && agent.timing !== 'none')
+    .filter((agent) => agent.startMs !== null && agent.endMs > agent.startMs)
     .toSorted((a, b) => b.endMs - b.startMs - (a.endMs - a.startMs))
     .slice(0, TOP_ITEMS)
-    .map((agent) => `- ${formatDuration(agent.endMs - agent.startMs)} ${formatAgent(agent)}`);
+    .map((agent) => `- ${formatTiming(agent, agent.endMs - agent.startMs)} ${formatAgent(agent)}`);
   return [
     '## Time hotspots',
     harness === 'Claude Code'
       ? 'Longest tool calls (Claude Code: includes time waiting for tool approval):'
       : 'Longest tool calls:',
     ...orNone(longestCalls),
-    'Longest gaps between steps (model time or idle; tool runs and user waits excluded):',
+    harness === 'Cursor'
+      ? 'Longest gaps between steps (Cursor: thinking time only):'
+      : 'Longest gaps between steps (model time or idle; tool runs and user waits excluded):',
     ...orNone(longestGaps),
-    'Slowest subagents:',
+    harness === 'Cursor'
+      ? 'Slowest subagents (Cursor: model time is not recorded):'
+      : 'Slowest subagents:',
     ...orNone(slowestSubagents),
   ];
 }
 
-function formatFeedbackLoops(agents) {
-  const loops = findFeedbackLoops(agents);
+function formatFeedbackLoops(loops) {
   const items = loops.slice(0, TOP_ITEMS).map(formatLoop);
   const lines = ['## Feedback loops', ...orNone(items)];
   if (loops.length > TOP_ITEMS) {
@@ -264,12 +267,26 @@ function formatFeedbackLoops(agents) {
 function formatLoop(loop) {
   const parts = [
     loop.results.join(' '),
-    `cycle avg ${formatDuration(loop.cycleAverageMs)}, longest ${formatDuration(loop.cycleLongestMs)}`,
+    formatCycle(loop),
     loop.runAverageMs === null ? 'run avg unknown' : `run avg ${formatDuration(loop.runAverageMs)}`,
     `files changed between runs: ${formatChangedFiles(loop.changedFiles)}`,
   ];
   const command = oneLine(loop.command, LOOP_COMMAND_LENGTH);
   return `- ${loop.runs.length}x ${formatAgent(loop.agent)} \`${command}\`: ${parts.join('; ')}`;
+}
+
+function formatCycle(loop) {
+  if (loop.agent.timing === 'none') {
+    return 'cycle unknown';
+  }
+  const average = formatTiming(loop.agent, loop.cycleAverageMs);
+  const longest = formatTiming(loop.agent, loop.cycleLongestMs);
+  return `cycle avg ${average}, longest ${longest}`;
+}
+
+function formatTiming(agent, durationMs) {
+  const prefix = agent.timing === 'partial' ? '≥' : '';
+  return `${prefix}${formatDuration(durationMs)}`;
 }
 
 function formatChangedFiles(files) {
@@ -288,6 +305,9 @@ function findModelGaps(agent) {
       durationMs: span.endMs - span.startMs,
       label: span.label,
     }));
+  }
+  if (agent.timing !== 'exact') {
+    return [];
   }
   const gaps = [];
   const steps = agent.steps.toSorted((a, b) => a.timeMs - b.timeMs);

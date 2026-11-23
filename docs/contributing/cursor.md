@@ -4,7 +4,9 @@ Read this before you change `skills/session-retro/scripts/cursor.mjs`. Do not pr
 
 The on-disk layout is private to Cursor. `meta.json` is `schemaVersion` 1, and the store meta blob can contain `blobEncryptionKey`. The file layout can change in any Cursor release. The JSON tool rows are the part the script depends on. The protobuf blobs and the `highLevelToolCallResult` wrapper can move.
 
-If a field below is missing, stop. Exit with a clear error that names the missing field. Do not scan blobs for a replacement.
+Required: at least one JSON message blob, and `toolCallId` and `toolName` on each tool row. If one is missing, stop. Exit with a clear error that names the missing field. Do not scan blobs for a replacement.
+
+Optional: `highLevelToolCallResult`. If it is missing, the call has no duration, and a failure comes only from `Exit code:` text.
 
 ## Paths
 
@@ -12,6 +14,7 @@ If a field below is missing, stop. Exit with a clear error that names the missin
 
 - Session: `$CURSOR_HOME/chats/<hash>/<id>/store.db`
 - Meta beside the store: `meta.json` with `cwd`, `title`, `createdAtMs`, `updatedAtMs`, `schemaVersion`
+- Session update time: the latest of `updatedAtMs` and the file times of `store.db` and `store.db-wal`. New writes can go to the WAL file first.
 - Subagents: `$CURSOR_HOME/projects/<cwd-slug>/agent-transcripts/<id>/subagents/*.jsonl`
 - The cwd slug replaces each non-alphanumeric character with `-`, then strips leading dashes.
 - A session id that appears as a subagent `.jsonl` is not a main session.
@@ -22,7 +25,7 @@ If a field below is missing, stop. Exit with a clear error that names the missin
 
 `store.db` is SQLite. The table is `blobs (id TEXT, data BLOB)`. Read rows in `rowid` order. Keep a blob only when the data is a JSON object with a string `role`. Skip every other blob, including protobuf.
 
-- `user`: text. A `<timestamp>` in the text sets the clock. ISO timestamps parse with `Date.parse`. The English form `Nov 23, 2026, 9:29 AM (UTC+1)` is also used.
+- `user`: text. A `<timestamp>` in the text sets the clock. ISO timestamps parse with `Date.parse`. The English form `Nov 23, 2026, 9:29 AM (UTC+1)` is also used. Without `(UTC±N)`, read it as local time.
 - `assistant`: `content[]` items with `type: "tool-call"`, `toolName`, `args`, and `toolCallId`.
 - `tool`: `content[]` item with `type: "tool-result"`, the same `toolCallId`, and `result`.
 
@@ -41,6 +44,10 @@ A thinking blob is one protobuf field 3. Inside it: field 1 is the text, field 3
 Shell duration still comes from the tool row. Do not treat a big protobuf copy as a thinking span. Those copies repeat the session start time.
 
 If no thinking span has a start and an end, leave the gap list empty.
+
+## Clock
+
+Only user timestamps and shell durations move the clock. Model time between them is not recorded. So loop cycle times and subagent times are lower bounds, and the report prints them with `≥`. If the session has no user timestamp, the report prints `cycle unknown` and leaves out subagent times.
 
 ## Absent
 
