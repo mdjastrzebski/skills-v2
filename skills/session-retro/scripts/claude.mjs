@@ -49,7 +49,11 @@ export function findClaudeSessionById(sessionId) {
 }
 
 export function readClaudeSession(sessionFile) {
-  const mainEntries = readTranscript(sessionFile).filter((entry) => entry.isSidechain !== true);
+  const entries = readTranscript(sessionFile);
+  if (!entries.some(isClaudeMessageEntry)) {
+    throw new Error(`Not a Claude Code or Codex transcript: ${sessionFile}`);
+  }
+  const mainEntries = entries.filter((entry) => entry.isSidechain !== true);
   const mainAgent = readClaudeAgent(mainEntries, 'main', true);
   const subagents = loadSubagents(sessionFile);
   return {
@@ -57,6 +61,10 @@ export function readClaudeSession(sessionFile) {
     harness: 'Claude Code',
     agents: [mainAgent, ...subagents],
   };
+}
+
+function isClaudeMessageEntry(entry) {
+  return (entry.type === 'user' || entry.type === 'assistant') && typeof entry.message === 'object';
 }
 
 function getProjectsDir() {
@@ -101,7 +109,9 @@ function readClaudeAgent(entries, label, isMain) {
       readUserEntry(entry, timeMs, agent, callsById);
     }
   }
-  agent.tokens = sumUsage(usageByMessage.values());
+  const usage = sumUsage(usageByMessage.values());
+  agent.tokens = usage.tokens;
+  agent.cacheReadTokens = usage.cacheReadTokens;
   return agent;
 }
 
@@ -195,13 +205,14 @@ function withoutDescription(input) {
 }
 
 function sumUsage(usages) {
-  let total = 0;
+  let tokens = 0;
+  let cacheReadTokens = 0;
   for (const usage of usages) {
-    total +=
+    tokens +=
       (usage.input_tokens ?? 0) +
       (usage.cache_creation_input_tokens ?? 0) +
-      (usage.cache_read_input_tokens ?? 0) +
       (usage.output_tokens ?? 0);
+    cacheReadTokens += usage.cache_read_input_tokens ?? 0;
   }
-  return total;
+  return { tokens, cacheReadTokens };
 }

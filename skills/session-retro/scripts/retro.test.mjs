@@ -35,7 +35,10 @@ test('prints all four sections for a Claude Code session and labels the subagent
     /\[subagent: Find config files\] Grep: `config` -> Path does not exist/,
   );
   assert.match(sections['Token hotspots'], /\[main\] Read: `\/repo\/src\/big\.ts`/);
-  assert.match(sections['Token hotspots'], /tokens \[subagent: Find config files\]/);
+  assert.match(
+    sections['Token hotspots'],
+    /- \d+ tokens \+ \d+(\.\d)?k cache reads \[subagent: Find config files\]/,
+  );
   assert.match(
     sections['Time hotspots'],
     /Slowest subagents:\n- 40s \[subagent: Find config files\]/,
@@ -155,6 +158,16 @@ test('fails with a clear message for a missing or bad file', () => {
   const bad = run(env, [badFile]);
   assert.equal(bad.status, 1);
   assert.match(bad.stderr, /Bad transcript file .*bad\.jsonl: no valid JSON lines/);
+});
+
+test('fails with a clear message for a file that is not a transcript', () => {
+  const env = setup();
+  const file = join(env.root, 'other.jsonl');
+  writeFileSync(file, '{"a":1}\n');
+  const result = run(env, [file]);
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, '');
+  assert.match(result.stderr, /Not a Claude Code or Codex transcript: .*other\.jsonl/);
 });
 
 test('prints usage for --help', () => {

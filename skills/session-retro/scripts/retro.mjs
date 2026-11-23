@@ -149,13 +149,13 @@ function formatTokenHotspots(agents) {
     .filter((agent) => !agent.isMain && agent.tokens > 0)
     .toSorted((a, b) => b.tokens - a.tokens)
     .slice(0, TOP_ITEMS)
-    .map((agent) => `- ${formatCount(agent.tokens)} tokens ${formatAgent(agent)}`);
+    .map((agent) => `- ${formatAgentTokens(agent)} ${formatAgent(agent)}`);
   const mainAgent = agents.find((agent) => agent.isMain);
   return [
     '## Token hotspots',
     'Largest tool results:',
     ...orNone(largestResults),
-    `Subagents by token use (main: ${formatCount(mainAgent.tokens)} tokens):`,
+    `Subagents by token use, cache reads apart (main: ${formatAgentTokens(mainAgent)}):`,
     ...orNone(subagentsByTokens),
   ];
 }
@@ -233,6 +233,14 @@ function formatAgent(agent) {
 
 function formatCall(call) {
   return `${call.tool}: \`${call.input}\``;
+}
+
+function formatAgentTokens(agent) {
+  const tokens = `${formatCount(agent.tokens)} tokens`;
+  if (agent.cacheReadTokens === 0) {
+    return tokens;
+  }
+  return `${tokens} + ${formatCount(agent.cacheReadTokens)} cache reads`;
 }
 
 function formatCount(value) {

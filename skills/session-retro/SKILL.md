@@ -17,10 +17,10 @@ description: Use when the user asks for a retrospective of this agent session (o
 
    If the script fails or finds no session, tell the user in one line: `No script signals: <reason>`. Then continue with your own reflection only. Do not search for transcripts in other places.
 
-3. **Merge** both sources into 3–5 impediments, most costly first. For each impediment, give:
+3. **Merge** both sources into 3–5 impediments, most costly first. Do not list small one-off retries. For each impediment, give:
    - What happened (one line).
    - Evidence: a script signal or your own observation.
-   - Approximate cost (time, tokens, or count of retries), when known.
+   - Approximate cost (time, tokens, or count of retries), when known. Before you give a cost, know what the number measures.
    - Root cause, if known.
    - Fix: the exact target file path and the proposed change (short text or diff).
 4. **Choose the fix target** where the real cause is: project `AGENTS.md` or `CLAUDE.md`, a skill's `SKILL.md`, a new or changed script, tool permissions (`settings.json`), or user memory. For a symlinked skill, resolve the real path and say which repo it is in. If no useful fix exists, say so. Do not invent a fix.

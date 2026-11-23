@@ -201,9 +201,12 @@ function findOutputError(text) {
 
 function readEvent(payload, agent, failuresById) {
   if (payload.type === 'token_count') {
-    const total = payload.info?.total_token_usage?.total_tokens;
-    if (typeof total === 'number' && total > agent.tokens) {
-      agent.tokens = total;
+    const usage = payload.info?.total_token_usage;
+    const total = usage?.total_tokens;
+    const cached = usage?.cached_input_tokens ?? 0;
+    if (typeof total === 'number' && total > agent.tokens + agent.cacheReadTokens) {
+      agent.tokens = total - cached;
+      agent.cacheReadTokens = cached;
     }
   } else if (payload.type === 'mcp_tool_call_end') {
     const result = payload.result ?? {};

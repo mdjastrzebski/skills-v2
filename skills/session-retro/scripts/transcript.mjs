@@ -112,6 +112,28 @@ export function summarizeError(text) {
   return `${oneLine(first, 50)} … ${oneLine(last, 70)}`;
 }
 
+export function createAgent(label, isMain) {
+  return {
+    label,
+    isMain,
+    startMs: null,
+    endMs: null,
+    tokens: 0,
+    cacheReadTokens: 0,
+    calls: [],
+    steps: [],
+  };
+}
+
+export function noteTime(agent, timeMs) {
+  if (agent.startMs === null || timeMs < agent.startMs) {
+    agent.startMs = timeMs;
+  }
+  if (agent.endMs === null || timeMs > agent.endMs) {
+    agent.endMs = timeMs;
+  }
+}
+
 function parseJsonObject(text) {
   if (text.trim() === '') {
     return null;
@@ -121,18 +143,5 @@ function parseJsonObject(text) {
     return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : null;
   } catch {
     return null;
-  }
-}
-
-export function createAgent(label, isMain) {
-  return { label, isMain, startMs: null, endMs: null, tokens: 0, calls: [], steps: [] };
-}
-
-export function noteTime(agent, timeMs) {
-  if (agent.startMs === null || timeMs < agent.startMs) {
-    agent.startMs = timeMs;
-  }
-  if (agent.endMs === null || timeMs > agent.endMs) {
-    agent.endMs = timeMs;
   }
 }
