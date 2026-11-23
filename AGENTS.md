@@ -10,6 +10,14 @@
 - `skills/<skill-name>/`: one folder for each skill.
 - `skills/<skill-name>/scripts/`: scripts that only one skill uses.
 - `scripts/`: repo-wide scripts.
+- `AGENTS.md`, `CLAUDE.md`: agent instructions. `CLAUDE.md` only imports `AGENTS.md`.
+- Do not add repo-local skill links (`.agents/skills/`, `.claude/skills/`). Install skills globally instead.
+
+## Install
+
+- Run `node scripts/link-skills.mjs` to link every skill as a global user skill.
+- Layout: `~/.agents/skills/<name>` -> `<repo>/skills/<name>`, and `~/.claude/skills/<name>` -> `../../.agents/skills/<name>`.
+- Run the script again after you add, rename, or remove a skill.
 
 ## Skill authoring
 
@@ -25,3 +33,6 @@
 - Write code without comments. Use clear names and simple structure, so that the code itself shows what it does.
 - Write plain, readable code. Prefer explicit steps over clever or compact code.
 - Organize each file top-down: high-level functions first, then the helpers that they use.
+- Put tests next to the script as `<name>.test.mjs`. Use `node:test` and `node:assert`.
+- Run tests with `node --test <path>`.
+- When you deliver a script, list its failure modes and edge cases.
