@@ -5,6 +5,12 @@
 - Keep responses to a maximum of approximately 1200 characters.
 - Use bullet lists or numbered lists when possible.
 
+## Repository layout
+
+- `skills/<skill-name>/`: one folder for each skill.
+- `skills/<skill-name>/scripts/`: scripts that only one skill uses.
+- `scripts/`: repo-wide scripts.
+
 ## Skill authoring
 
 - Keep skills loosely coupled. A skill must not know the internals of other skills. Treat other skills as black boxes, and use only their public contract: name, description, inputs, and outputs.
