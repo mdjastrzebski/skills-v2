@@ -224,7 +224,10 @@ test('fails with a clear message when the current directory has no session', () 
   const result = run(env, []);
   assert.equal(result.status, 1);
   assert.equal(result.stdout, '');
-  assert.match(result.stderr, /No Claude Code or Codex session found for the current directory/);
+  assert.match(
+    result.stderr,
+    /No Claude Code, Codex, or Cursor session found for the current directory/,
+  );
 });
 
 test('fails with a clear message for an unknown session ID', () => {
@@ -263,7 +266,99 @@ test('prints usage for --help', () => {
   const result = run(env, ['--help']);
   assert.equal(result.status, 0);
   assert.match(result.stdout, /^Usage: node retro\.mjs/);
+  assert.match(result.stdout, /Cursor/);
 });
+
+const CURSOR_SESSION_ID = '019b0000-0000-7000-8000-00000000000c';
+const CURSOR_CHILD_ID = '019b0000-0000-7000-8000-00000000000d';
+const cursorSqlite = await import('node:sqlite')
+  .then((module) => module.DatabaseSync)
+  .catch(() => null);
+
+test('prints repeats for a Cursor transcript file', () => {
+  const env = setup();
+  const file = join(env.root, 'session.jsonl');
+  writeJsonl(file, [
+    cursorTranscriptUser('2026-11-20T10:00:00.000Z', 'Read the file'),
+    cursorTranscriptAssistant('2026-11-20T10:00:05.000Z', [
+      { type: 'tool_use', name: 'Read', input: { path: '/repo/a.ts' } },
+    ]),
+    cursorTranscriptAssistant('2026-11-20T10:00:10.000Z', [
+      { type: 'tool_use', name: 'Read', input: { path: '/repo/a.ts' } },
+    ]),
+  ]);
+  const result = run(env, [file]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Harness: Cursor/);
+  assert.match(splitSections(result.stdout).Repeats, /- 2x \[main\] Read: `\/repo\/a\.ts`/);
+});
+
+test(
+  'prints all sections for a Cursor session and labels the subagent',
+  { skip: !cursorSqlite },
+  () => {
+    const env = setup();
+    writeCursorSession(env, cursorSqlite);
+    const result = run(env, []);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`Session: ${CURSOR_SESSION_ID}`));
+    assert.match(result.stdout, /Harness: Cursor/);
+    assert.match(result.stdout, /Agents: main \+ 1 subagent/);
+    const sections = splitSections(result.stdout);
+    assert.deepEqual(Object.keys(sections), SECTIONS.map(headingName));
+    assert.match(
+      sections['Failed tool calls'],
+      /\[subagent: Find config files\] Grep: `config` -> Path does not exist/,
+    );
+    assert.match(sections['Token hotspots'], /\[main\] Read: `\/repo\/src\/big\.ts`/);
+    assert.match(
+      sections['Time hotspots'],
+      /Slowest subagents:\n- 40s \[subagent: Find config files\]/,
+    );
+  },
+);
+
+test(
+  'shows a failed command retried twice in failed calls and repeats (Cursor)',
+  { skip: !cursorSqlite },
+  () => {
+    const env = setup();
+    writeCursorSession(env, cursorSqlite);
+    const sections = splitSections(run(env, []).stdout);
+    const failedLines = sections['Failed tool calls']
+      .split('\n')
+      .filter((line) => line.includes('Shell: `pnpm test`'));
+    assert.equal(failedLines.length, 2);
+    assert.match(failedLines[0], /-> exit code 1 … FAIL src\/a\.test\.mjs/);
+    assert.match(sections.Repeats, /- 3x \[main\] Shell: `pnpm test` \(2 failed\)/);
+  },
+);
+
+test('reports a Cursor feedback loop with edited files', { skip: !cursorSqlite }, () => {
+  const env = setup();
+  writeCursorLoopSession(env, cursorSqlite);
+  const result = run(env, [CURSOR_SESSION_ID]);
+  assert.equal(result.status, 0, result.stderr);
+  const lines = splitSections(result.stdout)['Feedback loops'].split('\n').slice(1);
+  assert.deepEqual(lines, [
+    '- 3x [main] `pnpm test`: fail fail pass; cycle avg 45s, longest 1m 0s; run avg 20s; files changed between runs: a.ts, b.ts',
+  ]);
+});
+
+test(
+  'selects a newer Cursor session ahead of Claude Code and Codex',
+  { skip: !cursorSqlite },
+  () => {
+    const env = setup();
+    const claudeFile = writeClaudeSession(env);
+    const { mainFile } = writeCodexSession(env);
+    const cursorFile = writeCursorSession(env, cursorSqlite);
+    setModifiedTime(claudeFile, 1000);
+    setModifiedTime(mainFile, 2000);
+    setModifiedTime(cursorFile, 3000);
+    assert.match(run(env, []).stdout, /Harness: Cursor/);
+  },
+);
 
 function setup() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'session-retro-test-')));
@@ -273,9 +368,10 @@ function setup() {
     home: join(root, 'home'),
     claudeConfigDir: join(root, 'claude'),
     codexHome: join(root, 'codex'),
+    cursorHome: join(root, 'cursor'),
     cwd: join(root, 'project'),
   };
-  for (const dir of [env.home, env.claudeConfigDir, env.codexHome, env.cwd]) {
+  for (const dir of [env.home, env.claudeConfigDir, env.codexHome, env.cursorHome, env.cwd]) {
     mkdirSync(dir, { recursive: true });
   }
   return env;
@@ -292,6 +388,7 @@ function run(env, args) {
     HOME: env.home,
     CLAUDE_CONFIG_DIR: env.claudeConfigDir,
     CODEX_HOME: env.codexHome,
+    CURSOR_HOME: env.cursorHome,
     GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_CONFIG_NOSYSTEM: '1',
   });
@@ -671,4 +768,189 @@ function writeJsonl(file, entries) {
 
 function setModifiedTime(file, secondsSinceEpoch) {
   utimesSync(file, secondsSinceEpoch, secondsSinceEpoch);
+}
+
+function cursorTranscriptUser(timestamp, text) {
+  return {
+    role: 'user',
+    message: {
+      content: [
+        {
+          type: 'text',
+          text: `<timestamp>${timestamp}</timestamp>\n<user_query>\n${text}\n</user_query>`,
+        },
+      ],
+    },
+  };
+}
+
+function cursorTranscriptAssistant(timestamp, content) {
+  return { role: 'assistant', message: { content } };
+}
+
+function writeCursorSession(env, DatabaseSync) {
+  const store = cursorStorePath(env, CURSOR_SESSION_ID);
+  const bigOutput = 'export const value = 1;\n'.repeat(2000);
+  const failure = 'Exit code: 1\n\nCommand output:\n\n```\nFAIL src/a.test.mjs';
+  writeCursorStore(DatabaseSync, store, [
+    cursorUser('2026-11-20T10:00:00.000Z', 'Fix the failing test'),
+    cursorAssistant('call_1', 'Shell', { command: 'pnpm test', description: 'Run tests' }),
+    cursorTool('call_1', 'Shell', failure, { exitCode: 1, command: 'pnpm test' }),
+    cursorAssistant('call_2', 'Shell', { command: 'pnpm test', description: 'Run tests again' }),
+    cursorTool('call_2', 'Shell', failure, { exitCode: 1, command: 'pnpm test' }),
+    cursorAssistant('call_3', 'Read', { path: '/repo/src/big.ts' }),
+    cursorTool('call_3', 'Read', bigOutput, {}),
+    cursorAssistant('call_4', 'Shell', { command: 'pnpm test', description: 'Run tests' }),
+    cursorTool('call_4', 'Shell', 'Exit code: 0\n\nCommand output:\n\n```\nAll tests passed', {
+      exitCode: 0,
+      command: 'pnpm test',
+      localExecutionTimeMs: 10000,
+    }),
+  ]);
+  writeFileSync(
+    join(dirname(store), 'meta.json'),
+    JSON.stringify({ cwd: env.cwd, title: 'Fix tests', createdAtMs: 1, updatedAtMs: 2 }),
+  );
+
+  const childStore = cursorStorePath(env, CURSOR_CHILD_ID);
+  writeCursorStore(DatabaseSync, childStore, [
+    cursorUser('2026-11-20T10:01:00.000Z', 'Find config files'),
+    cursorAssistant('call_g', 'Grep', { pattern: 'config', path: '/repo/missing' }),
+    cursorTool('call_g', 'Grep', 'Path does not exist', {
+      isError: true,
+      rawErrorMessages: ['Path does not exist'],
+    }),
+    cursorAssistant('call_s', 'Shell', { command: 'rg TODO' }),
+    cursorTool('call_s', 'Shell', 'Exit code: 0\n\nCommand output:\n\n```\nsrc/a.ts', {
+      exitCode: 0,
+      command: 'rg TODO',
+      localExecutionTimeMs: 40000,
+    }),
+  ]);
+  writeFileSync(
+    join(dirname(childStore), 'meta.json'),
+    JSON.stringify({
+      cwd: env.cwd,
+      title: 'Find config files',
+      createdAtMs: 1,
+      updatedAtMs: 2,
+    }),
+  );
+  const subagentsDir = join(
+    env.cursorHome,
+    'projects',
+    projectSlug(env.cwd),
+    'agent-transcripts',
+    CURSOR_SESSION_ID,
+    'subagents',
+  );
+  writeJsonl(join(subagentsDir, `${CURSOR_CHILD_ID}.jsonl`), [
+    cursorTranscriptUser('2026-11-20T10:01:00.000Z', 'Find config files'),
+  ]);
+  return store;
+}
+
+function writeCursorLoopSession(env, DatabaseSync) {
+  const store = cursorStorePath(env, CURSOR_SESSION_ID);
+  const commands = [
+    'pnpm test',
+    'cd /repo/packages/x && pnpm test 2>&1 | tail -20',
+    '  pnpm   test | grep -v noise | head -5  ',
+  ];
+  const starts = [
+    '2026-11-20T10:00:05.000Z',
+    '2026-11-20T10:00:35.000Z',
+    '2026-11-20T10:01:35.000Z',
+  ];
+  const durations = [10000, 20000, 30000];
+  const messages = [];
+  for (let index = 0; index < 3; index += 1) {
+    const passed = index === 2;
+    messages.push(cursorUser(starts[index], 'Run tests'));
+    messages.push(cursorAssistant(`call_run_${index}`, 'Shell', { command: commands[index] }));
+    messages.push(
+      cursorTool(
+        `call_run_${index}`,
+        'Shell',
+        passed ? 'Exit code: 0\n\nAll tests passed' : 'Exit code: 1\n\nFAIL',
+        {
+          exitCode: passed ? 0 : 1,
+          command: commands[index],
+          localExecutionTimeMs: durations[index],
+        },
+      ),
+    );
+    if (!passed) {
+      const files = index === 0 ? ['/repo/src/a.ts', '/repo/src/b.ts'] : ['/repo/src/a.ts'];
+      const names = index === 0 ? ['StrReplace', 'Write'] : ['Write'];
+      for (const [fileIndex, file] of files.entries()) {
+        const callId = `call_edit_${index}_${fileIndex}`;
+        messages.push(cursorAssistant(callId, names[fileIndex], { path: file }));
+        messages.push(cursorTool(callId, names[fileIndex], 'ok', {}));
+      }
+    }
+  }
+  writeCursorStore(DatabaseSync, store, messages);
+  writeFileSync(
+    join(dirname(store), 'meta.json'),
+    JSON.stringify({ cwd: env.cwd, title: 'Loop', createdAtMs: 1, updatedAtMs: 2 }),
+  );
+  return store;
+}
+
+function writeCursorStore(DatabaseSync, file, messages) {
+  mkdirSync(dirname(file), { recursive: true });
+  const database = new DatabaseSync(file);
+  database.exec('CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB)');
+  const insert = database.prepare('INSERT INTO blobs (id, data) VALUES (?, ?)');
+  messages.forEach((message, index) => {
+    insert.run(String(index), JSON.stringify(message));
+  });
+  database.close();
+}
+
+function cursorStorePath(env, sessionId) {
+  return join(env.cursorHome, 'chats', 'workspace', sessionId, 'store.db');
+}
+
+function projectSlug(cwd) {
+  return cwd.replace(/[^a-zA-Z0-9]/g, '-').replace(/^-+/, '');
+}
+
+function cursorUser(timestamp, text) {
+  return {
+    role: 'user',
+    content: [{ type: 'text', text: `<timestamp>${timestamp}</timestamp>\n${text}` }],
+  };
+}
+
+function cursorAssistant(callId, tool, args) {
+  return {
+    role: 'assistant',
+    id: `msg_${callId}`,
+    content: [{ type: 'tool-call', toolCallId: callId, toolName: tool, args }],
+  };
+}
+
+function cursorTool(callId, tool, result, info) {
+  const shellRun = {
+    command: info.command,
+    exitCode: info.exitCode,
+    localExecutionTimeMs: info.localExecutionTimeMs,
+  };
+  const output =
+    info.exitCode === undefined ? {} : { [info.exitCode === 0 ? 'success' : 'failure']: shellRun };
+  return {
+    role: 'tool',
+    content: [{ type: 'tool-result', toolCallId: callId, toolName: tool, result }],
+    providerOptions: {
+      cursor: {
+        highLevelToolCallResult: {
+          isError: info.isError === true,
+          rawErrorMessages: info.rawErrorMessages,
+          output,
+        },
+      },
+    },
+  };
 }

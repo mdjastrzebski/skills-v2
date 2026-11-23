@@ -8,6 +8,12 @@ import {
   listCodexMainSessions,
   readCodexSession,
 } from './codex.mjs';
+import {
+  findCursorSessionById,
+  isCursorTranscript,
+  listCursorMainSessions,
+  readCursorSession,
+} from './cursor.mjs';
 import { findFeedbackLoops } from './loops.mjs';
 import { oneLine } from './transcript.mjs';
 
@@ -18,7 +24,7 @@ const LOOP_COMMAND_LENGTH = 80;
 
 const HELP = `Usage: node retro.mjs [session-id | path/to/session.jsonl]
 
-Prints retro signals for a Claude Code or Codex session and its subagents:
+Prints retro signals for a Claude Code, Codex, or Cursor session and its subagents:
 failed tool calls, repeats, token hotspots, time hotspots, and feedback loops
 (the same shell command run 3 or more times, with other tool calls between the runs).
 
@@ -54,33 +60,53 @@ function selectSessionFile(args) {
   if (argument.startsWith('-')) {
     throw new Error(`Unknown option: ${argument}. See --help.`);
   }
-  if (argument.endsWith('.jsonl')) {
+  if (isSessionPath(argument)) {
     if (!existsSync(argument)) {
       throw new Error(`Session file not found: ${argument}`);
     }
     return resolve(argument);
   }
-  const sessionFile = findCodexSessionById(argument) ?? findClaudeSessionById(argument);
+  const sessionFile =
+    findCodexSessionById(argument) ??
+    findClaudeSessionById(argument) ??
+    findCursorSessionById(argument);
   if (!sessionFile) {
-    throw new Error(`Unknown session ID: ${argument} (no Claude Code or Codex transcript)`);
+    throw new Error(
+      `Unknown session ID: ${argument} (no Claude Code, Codex, or Cursor transcript)`,
+    );
   }
   return sessionFile;
 }
 
 function findLatestSessionFile(cwd) {
-  const candidates = [...listCodexMainSessions(cwd), ...listClaudeSessions(cwd)];
+  const candidates = [
+    ...listCodexMainSessions(cwd),
+    ...listClaudeSessions(cwd),
+    ...listCursorMainSessions(cwd),
+  ];
   if (candidates.length === 0) {
-    throw new Error(`No Claude Code or Codex session found for the current directory: ${cwd}`);
+    throw new Error(
+      `No Claude Code, Codex, or Cursor session found for the current directory: ${cwd}`,
+    );
   }
   const sorted = candidates.toSorted((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
   return sorted[0];
 }
 
 function readSession(sessionFile) {
+  if (isCursorTranscript(sessionFile)) {
+    return readCursorSession(sessionFile);
+  }
   if (isCodexTranscript(sessionFile)) {
     return readCodexSession(sessionFile);
   }
   return readClaudeSession(sessionFile);
+}
+
+function isSessionPath(argument) {
+  return (
+    argument.endsWith('.jsonl') || argument.endsWith('.db') || basename(argument) === 'meta.json'
+  );
 }
 
 function formatReport(session) {

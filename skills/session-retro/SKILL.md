@@ -1,7 +1,7 @@
 ---
 name: session-retro
 disable-model-invocation: true
-description: Use when the user asks for a retrospective of this agent session (or of another Claude Code or Codex session). Gives the 3–5 most costly impediments, such as failed or repeated tool calls, large outputs, slow steps or subagents, and unclear instructions, each with evidence and a concrete fix that the user can pick to apply.
+description: Use when the user asks for a retrospective of this agent session (or of another Claude Code, Codex, or Cursor session). Gives the 3–5 most costly impediments, such as failed or repeated tool calls, large outputs, slow steps or subagents, and unclear instructions, each with evidence and a concrete fix that the user can pick to apply.
 ---
 
 # Session Retro
@@ -19,7 +19,7 @@ description: Use when the user asks for a retrospective of this agent session (o
    node <skill-base-dir>/scripts/retro.mjs [session-id | path/to/session.jsonl]
    ```
 
-   With no argument, the script selects the latest main session for the current directory (Claude Code or Codex) with its subagents. It prints failed tool calls, repeats, token hotspots, time hotspots, and feedback loops (the same command run 3 or more times). The feedback loops are evidence for your goal loops. You judge drift from your own context. The script does not.
+   With no argument, the script selects the latest main session for the current directory (Claude Code, Codex, or Cursor) with its subagents. It prints failed tool calls, repeats, token hotspots, time hotspots, and feedback loops (the same command run 3 or more times). The feedback loops are evidence for your goal loops. You judge drift from your own context. The script does not.
 
    If the script fails or finds no session, tell the user in one line: `No script signals: <reason>`. Then continue with your own reflection only. Do not search for transcripts in other places.
 
