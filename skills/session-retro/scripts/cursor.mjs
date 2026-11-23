@@ -74,6 +74,7 @@ export function readCursorSession(sessionFile) {
     throw new Error(`Bad transcript file ${sessionFile}: no valid JSON lines`);
   }
   const mainAgent = messagesToAgent(resolved.messages, 'main', true);
+  applyModelSpans(mainAgent, resolved.spans);
   const subagents = loadSubagents(resolved.id, resolved.cwd, resolved.transcriptFile);
   return { id: resolved.id, harness: 'Cursor', agents: [mainAgent, ...subagents] };
 }
@@ -181,10 +182,12 @@ function resolveSession(sessionFile) {
   if (basename(sessionFile) === 'store.db') {
     const id = basename(dirname(sessionFile));
     const meta = readJsonFile(join(dirname(sessionFile), 'meta.json'));
+    const stored = readStore(sessionFile);
     return {
       id,
       cwd: meta.cwd ?? null,
-      messages: readStoreMessages(sessionFile),
+      messages: stored.messages,
+      spans: stored.spans,
       transcriptFile: findTranscriptFile(id),
     };
   }
@@ -192,10 +195,12 @@ function resolveSession(sessionFile) {
   const store = findStoreFile(id);
   if (store) {
     const meta = readJsonFile(join(dirname(store), 'meta.json'));
+    const stored = readStore(store);
     return {
       id,
       cwd: meta.cwd ?? null,
-      messages: readStoreMessages(store),
+      messages: stored.messages,
+      spans: stored.spans,
       transcriptFile: sessionFile,
     };
   }
@@ -203,6 +208,7 @@ function resolveSession(sessionFile) {
     id,
     cwd: null,
     messages: readTranscriptMessages(sessionFile),
+    spans: [],
     transcriptFile: sessionFile,
   };
 }
@@ -244,37 +250,167 @@ function loadSubagents(sessionId, cwd, transcriptFile) {
 function loadSubagent(file) {
   const id = basename(file, '.jsonl');
   const store = findStoreFile(id);
-  const storeMessages = store ? readStoreMessages(store) : [];
-  const messages = storeMessages.length > 0 ? storeMessages : readTranscriptMessages(file);
+  const stored = store ? readStore(store) : { messages: [], spans: [] };
+  const messages = stored.messages.length > 0 ? stored.messages : readTranscriptMessages(file);
   if (messages.length === 0) {
     return null;
   }
   const meta = store ? readJsonFile(join(dirname(store), 'meta.json')) : {};
   const label = meta.title || labelFromMessages(messages, id);
-  return messagesToAgent(messages, label, false);
+  const agent = messagesToAgent(messages, label, false);
+  applyModelSpans(agent, stored.spans);
+  return agent;
 }
 
 function projectSlug(cwd) {
   return cwd.replace(/[^a-zA-Z0-9]/g, '-').replace(/^-+/, '');
 }
 
-function readStoreMessages(file) {
+function readStore(file) {
   const database = openStore(file);
   try {
     const rows = database.prepare('SELECT data FROM blobs ORDER BY rowid').all();
     const messages = [];
+    const spans = [];
+    const seenSpans = new Set();
     for (const row of rows) {
-      const message = parseMessageBlob(row.data);
+      const bytes = toBytes(row.data);
+      const message = parseMessageBlob(bytes);
       if (message) {
         messages.push(message);
+        continue;
       }
+      const span = readThinkingSpan(bytes);
+      if (!span) {
+        continue;
+      }
+      const key = `${span.startMs}\u0000${span.endMs}\u0000${span.label}`;
+      if (seenSpans.has(key)) {
+        continue;
+      }
+      seenSpans.add(key);
+      spans.push(span);
     }
-    return messages;
+    return { messages, spans };
   } catch (error) {
     throw new Error(`Cannot read transcript file ${file}: ${error.message}`, { cause: error });
   } finally {
     database.close();
   }
+}
+
+function applyModelSpans(agent, spans) {
+  if (!spans || spans.length === 0) {
+    return;
+  }
+  agent.modelSpans = spans;
+}
+
+function toBytes(data) {
+  if (typeof data === 'string') {
+    return Buffer.from(data);
+  }
+  return Buffer.from(data);
+}
+
+function readThinkingSpan(bytes) {
+  const fields = parseProto(bytes);
+  if (!fields || fields.length !== 1 || fields[0].field !== 3 || fields[0].kind !== 'bytes') {
+    return null;
+  }
+  const inner = parseProto(fields[0].value);
+  if (!inner) {
+    return null;
+  }
+  const textField = inner.find((field) => field.field === 1 && field.kind === 'bytes');
+  const startField = inner.find((field) => field.field === 3 && field.kind === 'varint');
+  const endField = inner.find((field) => field.field === 4 && field.kind === 'varint');
+  if (!textField || !startField || !endField) {
+    return null;
+  }
+  const durationMs = endField.value - startField.value;
+  if (durationMs <= 0 || durationMs > 15 * 60 * 1000) {
+    return null;
+  }
+  if (startField.value < 1_000_000_000_000) {
+    return null;
+  }
+  const text = readableText(textField.value);
+  if (!text) {
+    return null;
+  }
+  return { startMs: startField.value, endMs: endField.value, label: oneLine(text, 80) };
+}
+
+function parseProto(bytes) {
+  const fields = [];
+  let offset = 0;
+  while (offset < bytes.length) {
+    const key = readVarint(bytes, offset);
+    if (!key) {
+      return null;
+    }
+    const field = Math.floor(key.value / 8);
+    const wire = key.value % 8;
+    if (field === 0 || field > 200) {
+      return null;
+    }
+    offset = key.next;
+    if (wire === 0) {
+      const value = readVarint(bytes, offset);
+      if (!value) {
+        return null;
+      }
+      offset = value.next;
+      fields.push({ field, kind: 'varint', value: value.value });
+    } else if (wire === 2) {
+      const length = readVarint(bytes, offset);
+      if (!length) {
+        return null;
+      }
+      offset = length.next;
+      const end = offset + length.value;
+      if (end > bytes.length) {
+        return null;
+      }
+      fields.push({ field, kind: 'bytes', value: bytes.subarray(offset, end) });
+      offset = end;
+    } else {
+      return null;
+    }
+  }
+  return fields;
+}
+
+function readVarint(bytes, offset) {
+  let value = 0;
+  let shift = 0;
+  let index = offset;
+  while (index < bytes.length && shift <= 49) {
+    const byte = bytes[index];
+    index += 1;
+    value += (byte & 0x7f) * 2 ** shift;
+    if ((byte & 0x80) === 0) {
+      return { value, next: index };
+    }
+    shift += 7;
+  }
+  return null;
+}
+
+function readableText(bytes) {
+  const text = Buffer.from(bytes).toString('utf8');
+  if (text.includes('\uFFFD')) {
+    return null;
+  }
+  for (const char of text) {
+    const code = char.charCodeAt(0);
+    if (code < 32 && code !== 9 && code !== 10 && code !== 13) {
+      return null;
+    }
+  }
+  const trimmed = text.trim();
+  return trimmed === '' ? null : trimmed;
 }
 
 function openStore(file) {
@@ -295,7 +431,7 @@ function openStore(file) {
 }
 
 function parseMessageBlob(data) {
-  const text = typeof data === 'string' ? data : Buffer.from(data).toString('utf8');
+  const text = Buffer.from(data).toString('utf8');
   if (!text.startsWith('{')) {
     return null;
   }

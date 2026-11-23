@@ -257,6 +257,13 @@ function formatChangedFiles(files) {
 }
 
 function findModelGaps(agent) {
+  if (agent.modelSpans?.length > 0) {
+    return agent.modelSpans.map((span) => ({
+      startMs: span.startMs,
+      durationMs: span.endMs - span.startMs,
+      label: span.label,
+    }));
+  }
   const gaps = [];
   const steps = agent.steps.toSorted((a, b) => a.timeMs - b.timeMs);
   let index = 0;

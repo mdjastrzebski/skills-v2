@@ -346,6 +346,35 @@ test('reports a Cursor feedback loop with edited files', { skip: !cursorSqlite }
 });
 
 test(
+  'reports Cursor thinking spans as model gaps and drops duplicates',
+  { skip: !cursorSqlite },
+  () => {
+    const env = setup();
+    const startMs = Date.parse('2026-11-20T10:00:05.000Z');
+    const span = thinkingBlob('Let me write the reader', startMs, startMs + 45_000);
+    const store = cursorStorePath(env, CURSOR_SESSION_ID);
+    writeCursorStore(cursorSqlite, store, [
+      cursorUser('2026-11-20T10:00:00.000Z', 'Add the reader'),
+      span,
+      span,
+      Buffer.from([0, 1, 2, 3, 4]),
+      thinkingBlob('Short note', startMs + 60_000, startMs + 61_000),
+    ]);
+    writeFileSync(
+      join(dirname(store), 'meta.json'),
+      JSON.stringify({ cwd: env.cwd, title: 'Think', createdAtMs: 1, updatedAtMs: 2 }),
+    );
+    const result = run(env, []);
+    assert.equal(result.status, 0, result.stderr);
+  const timeSection = splitSections(result.stdout)['Time hotspots'];
+  const lines = timeSection
+    .split('\n')
+    .filter((line) => line.includes('before Let me write the reader'));
+    assert.deepEqual(lines, ['- 45s [main] at 10:00:05 UTC, before Let me write the reader']);
+  },
+);
+
+test(
   'selects a newer Cursor session ahead of Claude Code and Codex',
   { skip: !cursorSqlite },
   () => {
@@ -904,7 +933,8 @@ function writeCursorStore(DatabaseSync, file, messages) {
   database.exec('CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB)');
   const insert = database.prepare('INSERT INTO blobs (id, data) VALUES (?, ?)');
   messages.forEach((message, index) => {
-    insert.run(String(index), JSON.stringify(message));
+    const data = Buffer.isBuffer(message) ? message : JSON.stringify(message);
+    insert.run(String(index), data);
   });
   database.close();
 }
@@ -915,6 +945,35 @@ function cursorStorePath(env, sessionId) {
 
 function projectSlug(cwd) {
   return cwd.replace(/[^a-zA-Z0-9]/g, '-').replace(/^-+/, '');
+}
+
+function thinkingBlob(text, startMs, endMs) {
+  const inner = Buffer.concat([
+    protoBytes(1, Buffer.from(text)),
+    protoVarint(2, endMs - startMs),
+    protoVarint(3, startMs),
+    protoVarint(4, endMs),
+  ]);
+  return protoBytes(3, inner);
+}
+
+function protoBytes(field, data) {
+  return Buffer.concat([protoVarintRaw((field << 3) | 2), protoVarintRaw(data.length), data]);
+}
+
+function protoVarint(field, value) {
+  return Buffer.concat([protoVarintRaw(field << 3), protoVarintRaw(value)]);
+}
+
+function protoVarintRaw(value) {
+  const bytes = [];
+  let rest = value;
+  while (rest > 127) {
+    bytes.push((rest & 0x7f) | 0x80);
+    rest = Math.floor(rest / 128);
+  }
+  bytes.push(rest);
+  return Buffer.from(bytes);
 }
 
 function cursorUser(timestamp, text) {

@@ -34,6 +34,14 @@ If a field below is missing, stop. Exit with a clear error that names the missin
 
 Shell tools are `Shell` and `Bash` (`args.command`). Edit tools are `Write`, `StrReplace`, `Edit`, `MultiEdit`, `Delete`, and `NotebookEdit` (`args.path` or `args.file_path`). The repeat key is the tool name plus the args without `description`.
 
+## Model time
+
+A thinking blob is one protobuf field 3. Inside it: field 1 is the text, field 3 is the start time in milliseconds, and field 4 is the end time. The gap is `end - start`. Use that as model time. Ignore a copy of the same start, end, and text. Ignore a span longer than 15 minutes.
+
+Shell duration still comes from the tool row. Do not treat a big protobuf copy as a thinking span. Those copies repeat the session start time.
+
+If no thinking span has a start and an end, leave the gap list empty.
+
 ## Absent
 
-The JSON rows have no model-token total and no model-gap time. A thinking blob can carry a start and end stamp about 1 ms apart. That is an event time, not model time. Report tool-output size as chars/4. Print token totals as unavailable. Do not search the store for `input_tokens`, `tokenUsage`, or `parentAgentId`. Those strings also appear inside file text that a tool result stored.
+The JSON rows have no model-token total. Report tool-output size as chars/4. Do not search the store for `input_tokens`, `tokenUsage`, or `parentAgentId`. Those strings also appear inside file text that a tool result stored.
