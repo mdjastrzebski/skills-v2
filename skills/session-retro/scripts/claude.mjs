@@ -12,6 +12,8 @@ import {
   summarizeError,
 } from './transcript.mjs';
 
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+
 const INPUT_KEYS = [
   'command',
   'file_path',
@@ -139,6 +141,8 @@ function readAssistantEntry(entry, timeMs, agent, callsById, usageByMessage) {
       failed: false,
       error: '',
       outputChars: 0,
+      shellCommand: getShellCommand(block),
+      editedFiles: getEditedFiles(block),
     };
     callsById.set(block.id, call);
     agent.calls.push(call);
@@ -194,6 +198,19 @@ function describeInput(input) {
     }
   }
   return oneLine(JSON.stringify(input));
+}
+
+function getShellCommand(block) {
+  const command = block.input?.command;
+  return block.name === 'Bash' && typeof command === 'string' ? command : null;
+}
+
+function getEditedFiles(block) {
+  if (!EDIT_TOOLS.has(block.name)) {
+    return [];
+  }
+  const file = block.input?.file_path ?? block.input?.notebook_path;
+  return typeof file === 'string' ? [file] : [];
 }
 
 function withoutDescription(input) {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { existsSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 import { findClaudeSessionById, listClaudeSessions, readClaudeSession } from './claude.mjs';
 import {
   findCodexSessionById,
@@ -8,14 +8,19 @@ import {
   listCodexMainSessions,
   readCodexSession,
 } from './codex.mjs';
+import { findFeedbackLoops } from './loops.mjs';
+import { oneLine } from './transcript.mjs';
 
 const TOP_ITEMS = 5;
 const CHARS_PER_TOKEN = 4;
+const TOP_CHANGED_FILES = 5;
+const LOOP_COMMAND_LENGTH = 80;
 
 const HELP = `Usage: node retro.mjs [session-id | path/to/session.jsonl]
 
 Prints retro signals for a Claude Code or Codex session and its subagents:
-failed tool calls, repeats, token hotspots, and time hotspots.
+failed tool calls, repeats, token hotspots, time hotspots, and feedback loops
+(the same shell command run 3 or more times, with other tool calls between the runs).
 
 Without an argument, it uses the latest main session of the current directory.
 It shows the top ${TOP_ITEMS} items for each signal.`;
@@ -93,6 +98,8 @@ function formatReport(session) {
     ...formatTokenHotspots(session.agents),
     '',
     ...formatTimeHotspots(session.agents),
+    '',
+    ...formatFeedbackLoops(session.agents),
   ];
   return lines.join('\n');
 }
@@ -191,6 +198,36 @@ function formatTimeHotspots(agents) {
     'Slowest subagents:',
     ...orNone(slowestSubagents),
   ];
+}
+
+function formatFeedbackLoops(agents) {
+  const loops = findFeedbackLoops(agents);
+  const items = loops.slice(0, TOP_ITEMS).map(formatLoop);
+  const lines = ['## Feedback loops', ...orNone(items)];
+  if (loops.length > TOP_ITEMS) {
+    lines.push(`- (+${loops.length - TOP_ITEMS} more)`);
+  }
+  return lines;
+}
+
+function formatLoop(loop) {
+  const parts = [
+    loop.results.join(' '),
+    `cycle avg ${formatDuration(loop.cycleAverageMs)}, longest ${formatDuration(loop.cycleLongestMs)}`,
+    loop.runAverageMs === null ? 'run avg unknown' : `run avg ${formatDuration(loop.runAverageMs)}`,
+    `files changed between runs: ${formatChangedFiles(loop.changedFiles)}`,
+  ];
+  const command = oneLine(loop.command, LOOP_COMMAND_LENGTH);
+  return `- ${loop.runs.length}x ${formatAgent(loop.agent)} \`${command}\`: ${parts.join('; ')}`;
+}
+
+function formatChangedFiles(files) {
+  if (files.length === 0) {
+    return 'none';
+  }
+  const names = files.slice(0, TOP_CHANGED_FILES).map((file) => basename(file));
+  const more = files.length > TOP_CHANGED_FILES ? ` +${files.length - TOP_CHANGED_FILES} more` : '';
+  return `${names.join(', ')}${more}`;
 }
 
 function findModelGaps(agent) {

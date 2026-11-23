@@ -14,6 +14,7 @@ import {
 
 const CALL_TYPES = new Set(['function_call', 'custom_tool_call']);
 const OUTPUT_TYPES = new Set(['function_call_output', 'custom_tool_call_output']);
+const SHELL_TOOLS = new Set(['exec_command', 'shell', 'shell_command']);
 const MODEL_TYPES = new Set(['reasoning', 'web_search_call', 'local_shell_call']);
 
 export function isCodexTranscript(file) {
@@ -165,6 +166,8 @@ function addCall(payload, timeMs, agent, callsById) {
     failed: false,
     error: '',
     outputChars: 0,
+    shellCommand: SHELL_TOOLS.has(tool) ? getCommand(args) || null : null,
+    editedFiles: tool === 'apply_patch' ? getPatchFiles(args, rawInput) : [],
   };
   callsById.set(callId, call);
   agent.calls.push(call);
@@ -265,6 +268,15 @@ function describeInput(tool, args, rawInput) {
     return oneLine(JSON.stringify(args));
   }
   return oneLine(rawInput);
+}
+
+function getPatchFiles(args, rawInput) {
+  const patch = typeof args?.input === 'string' ? args.input : rawInput;
+  if (typeof patch !== 'string') {
+    return [];
+  }
+  const matches = patch.matchAll(/^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$/gm);
+  return [...new Set([...matches].map((match) => match[1].trim()))];
 }
 
 function getRepeatInput(tool, args, rawInput) {
