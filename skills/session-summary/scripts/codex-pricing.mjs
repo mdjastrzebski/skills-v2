@@ -14,12 +14,31 @@ const PRICES_PER_MILLION_TOKENS = {
 
 export function calculateCost(model, usage) {
   const prices = PRICES_PER_MILLION_TOKENS[model];
-  if (!prices || !usage || !Number.isFinite(usage.input_tokens) || !Number.isFinite(usage.output_tokens)) return null;
+  if (
+    !prices ||
+    !usage ||
+    !Number.isFinite(usage.input_tokens) ||
+    !Number.isFinite(usage.output_tokens)
+  )
+    return null;
   const input = usage.input_tokens;
   const cached = usage.cached_input_tokens ?? 0;
   const cacheWrite = usage.cache_write_input_tokens ?? 0;
-  if (input < 0 || cached < 0 || cacheWrite < 0 || cached + cacheWrite > input || usage.output_tokens < 0) return null;
+  if (
+    input < 0 ||
+    cached < 0 ||
+    cacheWrite < 0 ||
+    cached + cacheWrite > input ||
+    usage.output_tokens < 0
+  )
+    return null;
   const longInput = input > 272_000 ? 2 : 1;
   const longOutput = input > 272_000 ? 1.5 : 1;
-  return ((input - cached - cacheWrite) * prices.input * longInput + cached * prices.cached * longInput + cacheWrite * prices.input * 1.25 * longInput + usage.output_tokens * prices.output * longOutput) / 1_000_000;
+  return (
+    ((input - cached - cacheWrite) * prices.input * longInput +
+      cached * prices.cached * longInput +
+      cacheWrite * prices.input * 1.25 * longInput +
+      usage.output_tokens * prices.output * longOutput) /
+    1_000_000
+  );
 }

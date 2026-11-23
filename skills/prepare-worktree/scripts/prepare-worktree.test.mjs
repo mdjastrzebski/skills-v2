@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
@@ -7,6 +7,12 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const script = fileURLToPath(new URL('./prepare-worktree.mjs', import.meta.url));
+const tempRoot = realpathSync(mkdtempSync(join(tmpdir(), 'prepare-worktree-')));
+const env = isolatedEnv(tempRoot);
+
+after(() => {
+  rmSync(tempRoot, { recursive: true, force: true });
+});
 
 test('creates a new branch from origin default branch', () => {
   const { repo, root } = setupRepo();
@@ -52,21 +58,43 @@ test('reports main-checkout when the branch is checked out in the main checkout'
 });
 
 function setupRepo() {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'prepare-worktree-')));
+  const root = mkdtempSync(join(tempRoot, 'case-'));
   const origin = join(root, 'origin.git');
   const repo = join(root, 'app');
   git(root, ['init', '--quiet', '--bare', '--initial-branch=main', origin]);
   git(root, ['clone', '--quiet', origin, repo]);
-  git(repo, ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '--quiet', '--allow-empty', '-m', 'init']);
+  git(repo, [
+    '-c',
+    'user.name=t',
+    '-c',
+    'user.email=t@t',
+    'commit',
+    '--quiet',
+    '--allow-empty',
+    '-m',
+    'init',
+  ]);
   git(repo, ['push', '--quiet', 'origin', 'main']);
   git(repo, ['remote', 'set-head', 'origin', 'main']);
   return { root, origin, repo };
 }
 
 function run(cwd, args) {
-  return execFileSync(process.execPath, [script, ...args], { cwd, encoding: 'utf8' });
+  return execFileSync(process.execPath, [script, ...args], { cwd, encoding: 'utf8', env });
 }
 
 function git(cwd, args) {
-  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+}
+
+function isolatedEnv(root) {
+  const inheritedEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_')),
+  );
+  return { ...inheritedEnv, HOME: root, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
 }

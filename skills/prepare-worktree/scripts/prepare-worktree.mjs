@@ -23,10 +23,14 @@ function main() {
   const existingPath = findWorktreeForBranch(branch, mainRoot);
   if (existingPath && !existsSync(existingPath)) {
     git(['worktree', 'prune'], mainRoot);
-    console.log(`Note: removed a stale worktree record for ${branch}. Its folder did not exist: ${existingPath}`);
+    console.log(
+      `Note: removed a stale worktree record for ${branch}. Its folder did not exist: ${existingPath}`,
+    );
   } else if (existingPath === mainRoot) {
     report('main-checkout', branch, mainRoot, 'branch is checked out in the main checkout');
-    console.log(`Note: ${branch} is checked out in the main checkout, so it cannot have a second worktree. To work in parallel, switch the main checkout to a different branch and run again, or use a different branch name.`);
+    console.log(
+      `Note: ${branch} is checked out in the main checkout, so it cannot have a second worktree. To work in parallel, switch the main checkout to a different branch and run again, or use a different branch name.`,
+    );
     return;
   } else if (existingPath) {
     report('reused', branch, existingPath, 'branch is already checked out in this worktree');
@@ -43,14 +47,19 @@ function main() {
     return;
   }
   if (refExists(`refs/remotes/origin/${branch}`, mainRoot)) {
-    git(['worktree', 'add', '--quiet', '--track', '-b', branch, worktreePath, `origin/${branch}`], mainRoot);
+    git(
+      ['worktree', 'add', '--quiet', '--track', '-b', branch, worktreePath, `origin/${branch}`],
+      mainRoot,
+    );
     report('remote', branch, worktreePath, `created local branch tracking origin/${branch}`);
     return;
   }
   const baseRef = base ?? findDefaultRemoteBranch(mainRoot);
   git(['worktree', 'add', '--quiet', '--no-track', '-b', branch, worktreePath, baseRef], mainRoot);
   report('new', branch, worktreePath, `created new branch from ${baseRef}`);
-  console.log(`Note: no local or origin branch named ${branch} existed. If you expected an existing branch, check the name.`);
+  console.log(
+    `Note: no local or origin branch named ${branch} existed. If you expected an existing branch, check the name.`,
+  );
 }
 
 function parseArguments(args) {
@@ -120,7 +129,11 @@ function refExists(ref, cwd) {
 }
 
 function git(args, cwd) {
-  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
 }
 
 function report(mode, branch, path, message) {

@@ -34,5 +34,18 @@
 - Write plain, readable code. Prefer explicit steps over clever or compact code.
 - Organize each file top-down: high-level functions first, then the helpers that they use.
 - Put tests next to the script as `<name>.test.mjs`. Use `node:test` and `node:assert`.
-- Run tests with `node --test <path>`.
+- Run `pnpm install` once to get the dev tools.
+- Before you finish, run `pnpm format`, `pnpm lint`, and `pnpm test`. Fix all errors and warnings.
+- Formatter and linter config: `.oxfmtrc.json` (oxfmt), `.oxlintrc.json` (oxlint).
 - When you deliver a script, list its failure modes and edge cases.
+
+## Test isolation
+
+- Make each test independent. Do not share state or files between tests, and do not rely on test order.
+- Create all files in a new `mkdtempSync` folder. Delete it in an `after()` hook.
+- Never read or write real user files, such as `~/.claude`, `~/.agents`, `~/.codex`, or this repo's `.git`.
+- Run each child process (the script, `git`) with an isolated environment:
+  - Set `HOME` and each config-folder override (for example `CODEX_HOME`, `CLAUDE_CONFIG_DIR`) to the temp folder.
+  - Remove all `GIT_*` variables. Set `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`.
+  - Set `cwd` to a folder inside the temp folder.
+- Run child scripts with `process.execPath`, not `node`.

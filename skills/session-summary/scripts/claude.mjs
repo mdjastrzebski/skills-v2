@@ -82,7 +82,9 @@ function loadSubagents(sessionFile) {
     return [];
   }
 
-  const transcriptFileNames = readdirSync(subagentsDir).filter((fileName) => fileName.endsWith('.jsonl'));
+  const transcriptFileNames = readdirSync(subagentsDir).filter((fileName) =>
+    fileName.endsWith('.jsonl'),
+  );
   const subagents = transcriptFileNames.map((fileName) => loadSubagent(subagentsDir, fileName));
   subagents.sort((a, b) => a.startTime.localeCompare(b.startTime));
   return subagents;
@@ -184,7 +186,11 @@ function getUniqueAssistantMessages(entries) {
   const messagesById = new Map();
   for (const entry of entries) {
     const message = entry.message;
-    const isModelMessage = entry.type === 'assistant' && message?.usage && message.model && message.model !== '<synthetic>';
+    const isModelMessage =
+      entry.type === 'assistant' &&
+      message?.usage &&
+      message.model &&
+      message.model !== '<synthetic>';
     if (isModelMessage) {
       messagesById.set(message.id ?? entry.uuid, message);
     }

@@ -5,11 +5,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const scriptRepoRoot = fs.realpathSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
+const scriptRepoRoot = fs.realpathSync(
+  path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'),
+);
 const repoRoot = findMainRepoRoot(scriptRepoRoot);
 const skillsRoot = path.join(repoRoot, 'skills');
-const agentsSkillsDir = process.env.AGENTS_SKILLS_DIR ?? path.join(os.homedir(), '.agents', 'skills');
-const claudeSkillsDir = process.env.CLAUDE_SKILLS_DIR ?? path.join(os.homedir(), '.claude', 'skills');
+const agentsSkillsDir =
+  process.env.AGENTS_SKILLS_DIR ?? path.join(os.homedir(), '.agents', 'skills');
+const claudeSkillsDir =
+  process.env.CLAUDE_SKILLS_DIR ?? path.join(os.homedir(), '.claude', 'skills');
 const force = process.argv.includes('--force');
 
 main();
@@ -40,17 +44,23 @@ function main() {
 function findMainRepoRoot(fallbackRoot) {
   let commonGitDir;
   try {
-    commonGitDir = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
-      cwd: fallbackRoot,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
+    commonGitDir = execFileSync(
+      'git',
+      ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+      {
+        cwd: fallbackRoot,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      },
+    ).trim();
   } catch {
     return fallbackRoot;
   }
 
   if (path.basename(commonGitDir) !== '.git') {
-    console.error(`error  ${commonGitDir} has no main checkout; run this script from a normal clone`);
+    console.error(
+      `error  ${commonGitDir} has no main checkout; run this script from a normal clone`,
+    );
     process.exit(1);
   }
   return fs.realpathSync(path.dirname(commonGitDir));
@@ -62,7 +72,7 @@ function listSkillNames() {
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
     .filter((name) => fs.existsSync(path.join(skillsRoot, name, 'SKILL.md')))
-    .sort();
+    .toSorted();
 }
 
 function linkSkill(skillName) {
@@ -114,7 +124,9 @@ function linkOrSkip(target, linkPath, isOwnedTarget) {
   }
 
   if (!isOwnedTarget(resolveLinkTarget(linkPath)) && !force) {
-    console.error(`skip   ${linkPath} points to ${currentTarget}, not to this repo; use --force to replace it`);
+    console.error(
+      `skip   ${linkPath} points to ${currentTarget}, not to this repo; use --force to replace it`,
+    );
     return false;
   }
 
