@@ -4,11 +4,13 @@ import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 
-const HELP = `Usage: node collect-changes.mjs [--diff] [target]
+const HELP = `Usage: node collect-changes.mjs [--diff] [target] [-- <path>...]
 
 Prints the data of a change as JSON. Does no analysis.
-With --diff, prints the full unified diff of the change (with rename detection) instead.
+With --diff, prints the unified diff of the change (with rename detection) instead.
 The diff includes untracked files when uncommitted changes are included.
+The diff leaves out files whose kind is not code (lockfiles, snapshots, generated, vendored).
+With -- <path>..., the diff shows only those files, of any kind. Give paths as in the JSON files list.
 
 Targets:
 - nothing: current branch against its merge-base with the default branch, plus uncommitted changes
@@ -45,15 +47,19 @@ const LOCKFILES = new Set([
 ]);
 const VENDORED_FOLDERS = new Set(['vendor', 'vendored', 'third_party', 'node_modules']);
 const GENERATED_FOLDERS = new Set(['dist', '__generated__']);
+const GENERATED_NAME_INFIX = '.generated.';
+const GENERATED_NAME_SUFFIXES = ['.min.js', '.min.css', '.map'];
 const SNAPSHOT_FOLDERS = new Set(['__snapshots__']);
+const SNAPSHOT_NAME_SUFFIX = '.snap';
+const NOT_CODE_PATHSPECS = buildNotCodePathspecs();
 
 function main() {
-  const { input, diff } = parseArguments(process.argv.slice(2));
+  const { input, diff, paths } = parseArguments(process.argv.slice(2));
   const root = findRepoRoot();
   const target = classifyTarget(input);
   const resolved = resolveTarget(target, root);
   if (diff) {
-    process.stdout.write(readFullDiff(resolved, root));
+    process.stdout.write(readFullDiff(resolved, root, paths));
     return;
   }
   const commits = listCommits(resolved.base, resolved.headCommit, root);
@@ -73,23 +79,32 @@ function main() {
 }
 
 function parseArguments(args) {
-  if (args.includes('--help') || args.includes('-h')) {
+  const separator = args.indexOf('--');
+  const options = separator === -1 ? args : args.slice(0, separator);
+  const paths = separator === -1 ? [] : args.slice(separator + 1);
+  if (options.includes('--help') || options.includes('-h')) {
     console.log(HELP);
     process.exit(0);
   }
-  const unknown = args.find((arg) => arg.startsWith('-') && arg !== '--diff');
+  const unknown = options.find((arg) => arg.startsWith('-') && arg !== '--diff');
   if (unknown !== undefined) {
     throw new Error(`Unknown option: ${unknown}`);
   }
-  const diff = args.includes('--diff');
-  const targets = args.filter((arg) => arg !== '--diff');
+  const diff = options.includes('--diff');
+  if (separator !== -1 && !diff) {
+    throw new Error('Paths after -- need --diff');
+  }
+  if (separator !== -1 && paths.length === 0) {
+    throw new Error('Expected at least one path after --');
+  }
+  const targets = options.filter((arg) => arg !== '--diff');
   if (targets.length > 1) {
     throw new Error(`Expected at most one target, got ${targets.length}: ${targets.join(' ')}`);
   }
   if (targets.length === 1 && targets[0].trim() === '') {
     throw new Error('Target is empty');
   }
-  return { input: targets[0], diff };
+  return { input: targets[0], diff, paths };
 }
 
 function findRepoRoot() {
@@ -345,10 +360,24 @@ function readChanges(resolved, root) {
   );
 }
 
-function readFullDiff(resolved, root) {
+function readFullDiff(resolved, root, paths) {
+  const pathspecs =
+    paths.length > 0 ? paths.map((path) => `:(literal)${path}`) : NOT_CODE_PATHSPECS;
   return withDiffSource(resolved, root, (range, untrackedPaths, env) =>
-    git([...DIFF_ARGUMENTS, ...range, '--'], root, env),
+    git([...DIFF_ARGUMENTS, ...range, '--', ...pathspecs], root, env),
   );
+}
+
+function buildNotCodePathspecs() {
+  const folders = [...VENDORED_FOLDERS, ...SNAPSHOT_FOLDERS, ...GENERATED_FOLDERS];
+  const globs = [
+    ...folders.map((folder) => `**/${folder}/**`),
+    ...[...LOCKFILES].map((name) => `**/${name}`),
+    `**/*${SNAPSHOT_NAME_SUFFIX}`,
+    `**/*${GENERATED_NAME_INFIX}*`,
+    ...GENERATED_NAME_SUFFIXES.map((suffix) => `**/*${suffix}`),
+  ];
+  return globs.map((glob) => `:(exclude,glob)${glob}`);
 }
 
 function withDiffSource(resolved, root, action) {
@@ -492,7 +521,10 @@ function classifyPath(path) {
   if (LOCKFILES.has(name)) {
     return 'lockfile';
   }
-  if (name.endsWith('.snap') || folders.some((folder) => SNAPSHOT_FOLDERS.has(folder))) {
+  if (
+    name.endsWith(SNAPSHOT_NAME_SUFFIX) ||
+    folders.some((folder) => SNAPSHOT_FOLDERS.has(folder))
+  ) {
     return 'snapshot';
   }
   if (isGeneratedName(name) || folders.some((folder) => GENERATED_FOLDERS.has(folder))) {
@@ -503,10 +535,8 @@ function classifyPath(path) {
 
 function isGeneratedName(name) {
   return (
-    /\.generated\./.test(name) ||
-    name.endsWith('.min.js') ||
-    name.endsWith('.min.css') ||
-    name.endsWith('.map')
+    name.includes(GENERATED_NAME_INFIX) ||
+    GENERATED_NAME_SUFFIXES.some((suffix) => name.endsWith(suffix))
   );
 }
 

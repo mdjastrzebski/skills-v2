@@ -264,6 +264,90 @@ test('--diff still fails on an unknown ref', () => {
   assert.match(result.stderr, /^Unknown ref: no-such-branch\n$/);
 });
 
+test('--diff leaves out the files that are not code', () => {
+  const { root, repo } = setupRepo();
+  git(repo, root, ['switch', '-q', '-c', 'feature']);
+  const files = {
+    'src/index.js': 'code',
+    'src/min.js.txt': 'code',
+    'src/distance.js': 'code',
+    'pnpm-lock.yaml': 'lockfile',
+    'packages/app/package-lock.json': 'lockfile',
+    'src/__snapshots__/view.test.js.snap': 'snapshot',
+    'src/other.snap': 'snapshot',
+    'dist/bundle.js': 'generated',
+    'packages/app/__generated__/types.ts': 'generated',
+    'src/schema.generated.ts': 'generated',
+    'src/app.min.js': 'generated',
+    'src/app.min.css': 'generated',
+    'src/app.js.map': 'generated',
+    'vendor/lib.js': 'vendored',
+    'packages/app/third_party/lib.js': 'vendored',
+  };
+  for (const path of Object.keys(files)) {
+    mkdirSync(join(repo, path, '..'), { recursive: true });
+    writeFileSync(join(repo, path), `${path}\n`);
+  }
+  git(repo, root, ['add', '.']);
+  commitStaged(repo, root, 'mixed');
+  writeFileSync(join(repo, 'untracked.js'), 'untracked\n');
+  writeFileSync(join(repo, 'yarn.lock'), 'untracked lock\n');
+
+  const json = runJson(repo, root);
+  const result = run(repo, root, { args: ['--diff'] });
+
+  assert.equal(result.status, 0, result.stderr);
+  const kinds = Object.fromEntries(json.files.map((file) => [file.path, file.kind]));
+  assert.deepEqual(kinds, { ...files, 'untracked.js': 'code', 'yarn.lock': 'lockfile' });
+  const codePaths = json.files.filter((file) => file.kind === 'code').map((file) => file.path);
+  assert.deepEqual(diffPaths(result.stdout).toSorted(), codePaths.toSorted());
+});
+
+test('--diff -- <path> shows only the given files, also files that are not code', () => {
+  const { root, repo } = setupRepo();
+  git(repo, root, ['switch', '-q', '-c', 'feature']);
+  commitFile(repo, root, 'pnpm-lock.yaml', 'lock\n', 'add lock');
+  commitFile(repo, root, 'one.txt', 'one\n', 'add one');
+  writeFileSync(join(repo, 'two.txt'), 'two\n');
+  writeFileSync(join(repo, 'untracked.txt'), 'untracked\n');
+
+  const result = run(repo, root, {
+    args: ['--diff', '--', 'pnpm-lock.yaml', 'untracked.txt'],
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(diffPaths(result.stdout), ['pnpm-lock.yaml', 'untracked.txt']);
+});
+
+test('--diff -- <path> matches paths literally', () => {
+  const { root, repo } = setupRepo();
+  git(repo, root, ['switch', '-q', '-c', 'feature']);
+  commitFile(repo, root, 'a*.txt', 'star\n', 'add star');
+  commitFile(repo, root, 'ab.txt', 'ab\n', 'add ab');
+  writeFileSync(join(repo, '--help'), 'dash\n');
+  git(repo, root, ['add', '--', '--help']);
+  commitStaged(repo, root, 'add dash');
+
+  const result = run(repo, root, { args: ['--diff', 'feature', '--', 'a*.txt', '--help'] });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(diffPaths(result.stdout).toSorted(), ['--help', 'a*.txt']);
+});
+
+test('paths after -- need --diff and at least one path', () => {
+  const { root, repo } = setupRepo();
+  const cases = [
+    { args: ['--', 'README.md'], message: /^Paths after -- need --diff\n$/ },
+    { args: ['--diff', '--'], message: /^Expected at least one path after --\n$/ },
+  ];
+  for (const { args, message } of cases) {
+    const result = run(repo, root, { args });
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, message);
+  }
+});
+
 test('unknown option fails with a non-zero exit', () => {
   const { root, repo } = setupRepo();
   for (const args of [['--bogus'], ['--diff', '--bogus'], ['-x']]) {
@@ -573,6 +657,10 @@ function byPath(files) {
       { status: file.status, added: file.added, removed: file.removed, untracked: file.untracked },
     ]),
   );
+}
+
+function diffPaths(diff) {
+  return [...diff.matchAll(/^\+\+\+ b\/(.*)$/gm)].map((match) => match[1]);
 }
 
 function runJson(cwd, root, options = {}) {
