@@ -5,6 +5,7 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -178,6 +179,99 @@ test('detects an unstaged rename of a tracked file to an untracked file', () => 
   ]);
   assert.deepEqual(result.totals, { files: 1, added: 0, removed: 0, excludedFiles: 0 });
   assert.equal(git(repo, root, ['status', '--porcelain']), 'D old-name.txt\n?? new-name.txt');
+});
+
+test('--diff on the default target shows staged, unstaged, and untracked content', () => {
+  const { root, repo } = setupRepo();
+  git(repo, root, ['switch', '-q', '-c', 'feature']);
+  commitFile(repo, root, 'committed.txt', 'committed line\n', 'add committed file');
+  writeFileSync(join(repo, 'staged.txt'), 'staged line\n');
+  git(repo, root, ['add', 'staged.txt']);
+  writeFileSync(join(repo, 'README.md'), 'hello\nunstaged line\n');
+  writeFileSync(join(repo, 'untracked.txt'), 'untracked line\n');
+
+  const result = run(repo, root, { args: ['--diff'] });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^diff --git a\/README\.md b\/README\.md$/m);
+  assert.match(result.stdout, /^\+committed line$/m);
+  assert.match(result.stdout, /^\+staged line$/m);
+  assert.match(result.stdout, /^\+unstaged line$/m);
+  assert.match(result.stdout, /^diff --git a\/untracked\.txt b\/untracked\.txt$/m);
+  assert.match(result.stdout, /^\+untracked line$/m);
+});
+
+test('--diff shows an unstaged mv as a rename', () => {
+  const { root, repo } = setupRepo();
+  commitFile(repo, root, 'old-name.txt', 'line 1\nline 2\nline 3\nline 4\n', 'add file');
+  renameSync(join(repo, 'old-name.txt'), join(repo, 'new-name.txt'));
+
+  const result = run(repo, root, { args: ['--diff'] });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^rename from old-name\.txt$/m);
+  assert.match(result.stdout, /^rename to new-name\.txt$/m);
+});
+
+test('--diff leaves the real index and work tree unchanged', () => {
+  const { root, repo } = setupRepo();
+  writeFileSync(join(repo, 'staged.txt'), 'staged\n');
+  git(repo, root, ['add', 'staged.txt']);
+  writeFileSync(join(repo, 'untracked.txt'), 'untracked\n');
+  const statusBefore = git(repo, root, ['status', '--porcelain']);
+  const indexBefore = readFileSync(join(repo, '.git', 'index'));
+
+  const result = run(repo, root, { args: ['--diff'] });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^\+untracked$/m);
+  assert.equal(git(repo, root, ['status', '--porcelain']), statusBefore);
+  assert.equal(statusBefore, 'A  staged.txt\n?? untracked.txt');
+  assert.deepEqual(readFileSync(join(repo, '.git', 'index')), indexBefore);
+});
+
+test('--diff with a range target matches git diff -M A B', () => {
+  const { root, repo } = setupRepo();
+  const first = commitFile(repo, root, 'one.txt', '1\n', 'one');
+  commitFile(repo, root, 'two.txt', '2\n', 'two');
+  const third = commitFile(repo, root, 'three.txt', '3\n', 'three');
+  writeFileSync(join(repo, 'dirty.txt'), 'dirty\n');
+  const expected = execFileSync('git', ['diff', '-M', first, third], {
+    cwd: repo,
+    encoding: 'utf8',
+    env: isolatedEnv(root, false),
+  });
+
+  const result = run(repo, root, { args: ['--diff', `${first}..${third}`] });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.notEqual(expected, '');
+  assert.equal(result.stdout, expected);
+});
+
+test('--diff prints nothing and exits 0 for an empty diff', () => {
+  const { root, repo } = setupRepo();
+  const result = run(repo, root, { args: ['--diff'] });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, '');
+});
+
+test('--diff still fails on an unknown ref', () => {
+  const { root, repo } = setupRepo();
+  const result = run(repo, root, { args: ['--diff', 'no-such-branch'] });
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, '');
+  assert.match(result.stderr, /^Unknown ref: no-such-branch\n$/);
+});
+
+test('unknown option fails with a non-zero exit', () => {
+  const { root, repo } = setupRepo();
+  for (const args of [['--bogus'], ['--diff', '--bogus'], ['-x']]) {
+    const result = run(repo, root, { args });
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /^Unknown option: /);
+  }
 });
 
 test('lists a file removed from the index but kept in the work tree at most once', () => {

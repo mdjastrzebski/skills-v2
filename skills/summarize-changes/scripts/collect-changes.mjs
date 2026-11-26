@@ -4,9 +4,11 @@ import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 
-const HELP = `Usage: node collect-changes.mjs [target]
+const HELP = `Usage: node collect-changes.mjs [--diff] [target]
 
 Prints the data of a change as JSON. Does no analysis.
+With --diff, prints the full unified diff of the change (with rename detection) instead.
+The diff includes untracked files when uncommitted changes are included.
 
 Targets:
 - nothing: current branch against its merge-base with the default branch, plus uncommitted changes
@@ -18,6 +20,7 @@ const PR_FIELDS =
   'number,title,body,url,baseRefName,baseRefOid,headRefName,headRefOid,closingIssuesReferences';
 const GH_TIMEOUT_MS = 60_000;
 const WORKTREE = 'WORKTREE';
+const DIFF_ARGUMENTS = ['diff', '-M', '--no-color', '--no-ext-diff'];
 
 const LOCKFILES = new Set([
   'pnpm-lock.yaml',
@@ -45,10 +48,14 @@ const GENERATED_FOLDERS = new Set(['dist', '__generated__']);
 const SNAPSHOT_FOLDERS = new Set(['__snapshots__']);
 
 function main() {
-  const input = parseArguments(process.argv.slice(2));
+  const { input, diff } = parseArguments(process.argv.slice(2));
   const root = findRepoRoot();
   const target = classifyTarget(input);
   const resolved = resolveTarget(target, root);
+  if (diff) {
+    process.stdout.write(readFullDiff(resolved, root));
+    return;
+  }
   const commits = listCommits(resolved.base, resolved.headCommit, root);
   const files = collectFiles(resolved, root);
   const result = {
@@ -70,13 +77,19 @@ function parseArguments(args) {
     console.log(HELP);
     process.exit(0);
   }
-  if (args.length > 1) {
-    throw new Error(`Expected at most one target, got ${args.length}: ${args.join(' ')}`);
+  const unknown = args.find((arg) => arg.startsWith('-') && arg !== '--diff');
+  if (unknown !== undefined) {
+    throw new Error(`Unknown option: ${unknown}`);
   }
-  if (args.length === 1 && args[0].trim() === '') {
+  const diff = args.includes('--diff');
+  const targets = args.filter((arg) => arg !== '--diff');
+  if (targets.length > 1) {
+    throw new Error(`Expected at most one target, got ${targets.length}: ${targets.join(' ')}`);
+  }
+  if (targets.length === 1 && targets[0].trim() === '') {
     throw new Error('Target is empty');
   }
-  return args[0];
+  return { input: targets[0], diff };
 }
 
 function findRepoRoot() {
@@ -327,16 +340,28 @@ function collectFiles(resolved, root) {
 }
 
 function readChanges(resolved, root) {
+  return withDiffSource(resolved, root, (range, untrackedPaths, env) =>
+    readDiff(range, untrackedPaths, root, env),
+  );
+}
+
+function readFullDiff(resolved, root) {
+  return withDiffSource(resolved, root, (range, untrackedPaths, env) =>
+    git([...DIFF_ARGUMENTS, ...range, '--'], root, env),
+  );
+}
+
+function withDiffSource(resolved, root, action) {
   if (!resolved.uncommitted) {
-    return readDiff([resolved.base, resolved.headCommit], new Set(), root, process.env);
+    return action([resolved.base, resolved.headCommit], new Set(), process.env);
   }
   const untrackedPaths = listUntrackedPaths(root);
   if (untrackedPaths.length === 0) {
-    return readDiff([resolved.base], new Set(), root, process.env);
+    return action([resolved.base], new Set(), process.env);
   }
   return withTemporaryIndex(root, (env) => {
     addIntentToAdd(untrackedPaths, root, env);
-    return readDiff([resolved.base], new Set(untrackedPaths), root, env);
+    return action([resolved.base], new Set(untrackedPaths), env);
   });
 }
 
@@ -384,11 +409,12 @@ function addIntentToAdd(paths, root, env) {
 }
 
 function readDiff(range, untrackedPaths, root, env) {
-  const diffArguments = ['diff', '-M', '--no-color', '--no-ext-diff', '-z'];
   const statuses = parseNameStatus(
-    git([...diffArguments, '--name-status', ...range, '--'], root, env),
+    git([...DIFF_ARGUMENTS, '-z', '--name-status', ...range, '--'], root, env),
   );
-  const counts = parseNumstat(git([...diffArguments, '--numstat', ...range, '--'], root, env));
+  const counts = parseNumstat(
+    git([...DIFF_ARGUMENTS, '-z', '--numstat', ...range, '--'], root, env),
+  );
   return statuses.map((entry) => {
     const count = counts.get(entry.path) ?? { added: null, removed: null };
     return {

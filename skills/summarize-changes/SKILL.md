@@ -9,7 +9,7 @@ Give evidence and let the human judge; give no overall verdict. Read only: do no
 
 1. **Collect.** Run `node <skill-dir>/scripts/collect-changes.mjs [target]`. On error, show the message and stop; if `gh` failed for a PR, ask for the branch name. If `files` is empty, say "no changes" and stop.
 2. **Find the intent.** Use the spec or issue the user names, else `pr` (title, body, `linkedIssues`), else commit messages. If none, write "intent inferred from code".
-3. **Read.** Read the shape (`files`, `totals`, `commits`), then the diff (`git diff -M <base> <head>`; if `head` is `WORKTREE`, `git diff -M <base>` and the `untracked` files) and the code around it, block by block. If the commit messages tell a story, use commits as blocks; else group files by purpose, not by folder. Track coverage: in depth, skimmed, collapsed, skipped.
+3. **Read.** Read the shape (`files`, `totals`, `commits`), then the diff (`node <skill-dir>/scripts/collect-changes.mjs --diff [target]`, same target as step 1; it includes untracked files) and the code around it, block by block. If the commit messages tell a story, use commits as blocks; else group files by purpose, not by folder. Track coverage: in depth, skimmed, collapsed, skipped.
 4. **Large change** (`totals` over ~30 files or ~1,500 lines): read by priority: public interfaces, types, schemas, deleted code, entry points, core logic. Spot-check each mechanical pattern (renames, codemods, import moves), then collapse it into one line. Read in depth the files that break the pattern.
 5. **Pass 1: answer the core questions.** Make them final before step 6.
    - **Matches intent:** yes, partly, or no, against the named source. **Not in this change:** up to 3 things the intent promises or implies that the diff does not do.
