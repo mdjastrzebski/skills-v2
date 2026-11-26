@@ -71,6 +71,7 @@ function main() {
     head: resolved.uncommitted ? WORKTREE : resolved.headCommit,
     uncommitted: resolved.uncommitted,
     pr: resolved.pr,
+    prLookup: resolved.prLookup ?? null,
     commits,
     files,
     totals: computeTotals(files),
@@ -206,12 +207,15 @@ function resolveCurrent(root) {
     throw new Error('HEAD has no commit yet; make a first commit');
   }
   const defaultBranch = findDefaultBranch(root);
+  const lookup =
+    checkout.branch === null ? { status: 'not_attempted' } : findCurrentPullRequest(root);
   return {
     base: mergeBase(defaultBranch.commit, checkout.commit, root),
     baseRef: defaultBranch.name,
     headCommit: checkout.commit,
     uncommitted: hasUncommittedChanges(root),
-    pr: checkout.branch === null ? null : findCurrentPullRequest(root),
+    pr: lookup.pr ?? null,
+    prLookup: { status: lookup.status, ...(lookup.message ? { message: lookup.message } : {}) },
   };
 }
 
@@ -231,10 +235,17 @@ function viewPullRequest(ghArgument, root) {
 
 function findCurrentPullRequest(root) {
   const result = runGh(['pr', 'view', '--json', PR_FIELDS], root);
-  if (result.error || result.status !== 0) {
-    return null;
+  if (result.error) {
+    return { status: 'error', message: result.error.message };
   }
-  return toPullRequestSummary(parsePullRequestJson(result.stdout, 'for the current branch'));
+  if (result.status !== 0) {
+    const message = firstLine(result.stderr);
+    return { status: /^no pull requests found\b/i.test(message) ? 'not_found' : 'error', message };
+  }
+  return {
+    status: 'found',
+    pr: toPullRequestSummary(parsePullRequestJson(result.stdout, 'for the current branch')),
+  };
 }
 
 function parsePullRequestJson(text, label) {
@@ -263,19 +274,9 @@ function ensurePullRequestHead(data, root) {
   if (commitExists(data.headRefOid, root)) {
     return data.headRefOid;
   }
-  const fetch = runGit(
-    ['fetch', '--quiet', '--no-tags', 'origin', `refs/pull/${data.number}/head`],
-    root,
+  throw new Error(
+    `PR ${data.number} head ${data.headRefOid} is not local; run git fetch origin refs/pull/${data.number}/head and try again`,
   );
-  if (fetch.status !== 0) {
-    throw new Error(`Cannot fetch PR ${data.number} from origin: ${firstLine(fetch.stderr)}`);
-  }
-  if (!commitExists(data.headRefOid, root)) {
-    throw new Error(
-      `PR ${data.number} head ${data.headRefOid} is not on origin; the PR may have changed, run again`,
-    );
-  }
-  return data.headRefOid;
 }
 
 function findPullRequestBase(data, root) {

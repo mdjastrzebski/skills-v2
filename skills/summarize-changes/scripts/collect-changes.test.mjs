@@ -44,6 +44,7 @@ test('default target includes staged, unstaged, and untracked changes', () => {
   assert.equal(result.head, 'WORKTREE');
   assert.equal(result.uncommitted, true);
   assert.equal(result.pr, null);
+  assert.equal(result.prLookup.status, 'not_found');
   assert.deepEqual(
     result.commits.map((commit) => commit.subject),
     ['add committed file'],
@@ -77,6 +78,7 @@ test('default target includes PR data when gh finds a PR', () => {
   const result = runJson(repo, root);
 
   assert.equal(result.pr.number, 5);
+  assert.deepEqual(result.prLookup, { status: 'found' });
   assert.equal(result.pr.title, 'Add a');
   assert.deepEqual(result.pr.linkedIssues, [{ number: 9, url: 'https://example.com/issues/9' }]);
 });
@@ -85,6 +87,15 @@ test('default target continues without PR data when gh is missing', () => {
   const { root, repo } = setupRepo();
   const result = runJson(repo, root, { withoutGh: true });
   assert.equal(result.pr, null);
+  assert.equal(result.prLookup.status, 'error');
+  assert.match(result.prLookup.message, /ENOENT/);
+});
+
+test('default target reports a gh lookup failure', () => {
+  const { root, repo } = setupRepo();
+  writeFakeGh(root, 'echo "authentication failed" >&2\nexit 1\n');
+  const result = runJson(repo, root);
+  assert.deepEqual(result.prLookup, { status: 'error', message: 'authentication failed' });
 });
 
 test('branch target diffs from the merge-base and ignores uncommitted changes of another branch', () => {
@@ -512,6 +523,7 @@ test('PR target from a fork with the same branch name as the current branch igno
   git(upstream, root, ['branch', '-q', '-D', 'fork-main']);
   const clone = join(root, 'clone');
   git(root, root, ['clone', '-q', upstream, clone]);
+  git(clone, root, ['fetch', '-q', 'origin', 'refs/pull/7/head']);
   writeFileSync(join(clone, 'dirty.txt'), 'dirty\n');
   installFakeGh(root, pullRequestJson({ number: 7, headRefName: 'main', headRefOid: head }));
 
@@ -551,7 +563,7 @@ test('PR target uses the PR head when the local branch is behind it', () => {
   assert.deepEqual(Object.keys(byPath(result.files)), ['a.txt', 'b.txt']);
 });
 
-test('PR target fetches the PR head when it is not local', () => {
+test('PR target reports a missing head without fetching it', () => {
   const { root, repo: upstream } = setupRepo({ name: 'upstream' });
   git(upstream, root, ['switch', '-q', '-c', 'feature']);
   const head = commitFile(upstream, root, 'a.txt', 'a\n', 'add a');
@@ -559,14 +571,20 @@ test('PR target fetches the PR head when it is not local', () => {
   git(upstream, root, ['switch', '-q', 'main']);
   git(upstream, root, ['branch', '-q', '-D', 'feature']);
   const clone = join(root, 'clone');
-  git(root, root, ['clone', '-q', upstream, clone]);
+  git(root, root, ['clone', '-q', '--no-local', upstream, clone]);
   installFakeGh(root, pullRequestJson({ number: 7, headRefName: 'feature', headRefOid: head }));
 
-  const result = runJson(clone, root, { args: ['7'] });
+  const result = run(clone, root, { args: ['7'] });
 
-  assert.equal(result.head, head);
-  assert.equal(result.baseRef, 'origin/main');
-  assert.deepEqual(Object.keys(byPath(result.files)), ['a.txt']);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /not local; run git fetch origin refs\/pull\/7\/head and try again/);
+  assert.notEqual(
+    spawnSync('git', ['cat-file', '-e', `${head}^{commit}`], {
+      cwd: clone,
+      env: isolatedEnv(root, false),
+    }).status,
+    0,
+  );
 });
 
 test('PR target fails with a clear message when gh is missing', () => {
