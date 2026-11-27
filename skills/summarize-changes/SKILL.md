@@ -27,11 +27,11 @@ Give evidence and let the human judge; give no overall verdict. Read only: do no
 `<PR # / branch / range>` · base `<base>` · N files, +X/−Y · uncommitted <included | not included>
 <what and why, one line>. Intent: <source>
 
-**Risk: <low | medium | high>**: <why, evidence>. Read <block> → <block>. Look closely at: <what it touches> (`file`, <risk>); …
-
 **Scope:** matches intent <yes | partly | no>: <why> · focused <yes | no>: <why>
 - Not in this change: <item>; <item>
 - Not in intent: <item>; <item>
+
+**Risk: <low | medium | high>**: <why, evidence>. Read <block> → <block>. Look closely at: <what it touches> (`file`, <risk>); …
 
 **Main changes**
 1. **<block>**: <one sentence>. `file`
