@@ -4,13 +4,15 @@ import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 
-const HELP = `Usage: node collect-changes.mjs [--diff] [target] [-- <path>...]
+const HELP = `Usage: node collect-changes.mjs [--diff [--lines <start>-<end>]] [target] [-- <path>...]
 
 Prints the data of a change as JSON. Does no analysis.
 With --diff, prints the unified diff of the change (with rename detection) instead.
 The diff includes untracked files when uncommitted changes are included.
 The diff leaves out files whose kind is not code (lockfiles, snapshots, generated, vendored).
 With -- <path>..., the diff shows only those files, of any kind. Give paths as in the JSON files list.
+With --lines <start>-<end>, the diff shows only those diff output lines (1-based, inclusive).
+If lines remain after <end>, a last line "[diff continues: lines <next>-<total> of <total>]" follows.
 
 Targets:
 - nothing: current branch against its merge-base with the default branch, plus uncommitted changes
@@ -54,12 +56,13 @@ const SNAPSHOT_NAME_SUFFIX = '.snap';
 const NOT_CODE_PATHSPECS = buildNotCodePathspecs();
 
 function main() {
-  const { input, diff, paths } = parseArguments(process.argv.slice(2));
+  const { input, diff, lines, paths } = parseArguments(process.argv.slice(2));
   const root = findRepoRoot();
   const target = classifyTarget(input);
   const resolved = resolveTarget(target, root);
   if (diff) {
-    process.stdout.write(readFullDiff(resolved, root, paths));
+    const text = readFullDiff(resolved, root, paths);
+    process.stdout.write(lines === null ? text : selectLines(text, lines));
     return;
   }
   const commits = listCommits(resolved.base, resolved.headCommit, root);
@@ -87,25 +90,51 @@ function parseArguments(args) {
     console.log(HELP);
     process.exit(0);
   }
-  const unknown = options.find((arg) => arg.startsWith('-') && arg !== '--diff');
+  const { lines, rest } = extractLines(options);
+  const unknown = rest.find((arg) => arg.startsWith('-') && arg !== '--diff');
   if (unknown !== undefined) {
     throw new Error(`Unknown option: ${unknown}`);
   }
-  const diff = options.includes('--diff');
+  const diff = rest.includes('--diff');
+  if (lines !== null && !diff) {
+    throw new Error('--lines needs --diff');
+  }
   if (separator !== -1 && !diff) {
     throw new Error('Paths after -- need --diff');
   }
   if (separator !== -1 && paths.length === 0) {
     throw new Error('Expected at least one path after --');
   }
-  const targets = options.filter((arg) => arg !== '--diff');
+  const targets = rest.filter((arg) => arg !== '--diff');
   if (targets.length > 1) {
     throw new Error(`Expected at most one target, got ${targets.length}: ${targets.join(' ')}`);
   }
   if (targets.length === 1 && targets[0].trim() === '') {
     throw new Error('Target is empty');
   }
-  return { input: targets[0], diff, paths };
+  return { input: targets[0], diff, lines, paths };
+}
+
+function extractLines(options) {
+  const index = options.indexOf('--lines');
+  if (index === -1) {
+    return { lines: null, rest: options };
+  }
+  const value = options[index + 1];
+  const match = /^(\d+)-(\d+)$/.exec(value ?? '');
+  if (match === null) {
+    throw new Error('--lines needs a range <start>-<end>, for example --lines 1-200');
+  }
+  const start = Number(match[1]);
+  const end = Number(match[2]);
+  if (start < 1 || end < start) {
+    throw new Error(`Invalid line range: ${value}; need 1 <= start <= end`);
+  }
+  const rest = options.filter((_, position) => position !== index && position !== index + 1);
+  if (rest.includes('--lines')) {
+    throw new Error('Expected at most one --lines');
+  }
+  return { lines: { start, end }, rest };
 }
 
 function findRepoRoot() {
@@ -367,6 +396,22 @@ function readFullDiff(resolved, root, paths) {
   return withDiffSource(resolved, root, (range, untrackedPaths, env) =>
     git([...DIFF_ARGUMENTS, ...range, '--', ...pathspecs], root, env),
   );
+}
+
+function selectLines(text, { start, end }) {
+  const lines = text.split('\n');
+  if (lines.at(-1) === '') {
+    lines.pop();
+  }
+  const total = lines.length;
+  if (start > total) {
+    throw new Error(`Line range starts after the diff end; the diff has ${total} lines`);
+  }
+  const shown = lines.slice(start - 1, end);
+  if (end < total) {
+    shown.push(`[diff continues: lines ${end + 1}-${total} of ${total}]`);
+  }
+  return `${shown.join('\n')}\n`;
 }
 
 function buildNotCodePathspecs() {

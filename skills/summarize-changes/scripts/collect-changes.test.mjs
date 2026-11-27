@@ -345,6 +345,53 @@ test('--diff -- <path> matches paths literally', () => {
   assert.deepEqual(diffPaths(result.stdout).toSorted(), ['--help', 'a*.txt']);
 });
 
+test('--diff --lines shows that line range and marks the remaining lines', () => {
+  const { root, repo } = setupRepo();
+  git(repo, root, ['switch', '-q', '-c', 'feature']);
+  commitFile(repo, root, 'one.txt', '1\n2\n3\n', 'add one');
+  commitFile(repo, root, 'two.txt', '4\n5\n', 'add two');
+  const full = run(repo, root, { args: ['--diff', '--', 'one.txt'] }).stdout.split('\n');
+  full.pop();
+
+  const middle = run(repo, root, { args: ['--diff', '--lines', '2-4', '--', 'one.txt'] });
+  const tail = run(repo, root, { args: ['--diff', '--lines', '3-999', 'feature'] });
+
+  assert.equal(middle.status, 0, middle.stderr);
+  assert.equal(
+    middle.stdout,
+    `${full.slice(1, 4).join('\n')}\n[diff continues: lines 5-${full.length} of ${full.length}]\n`,
+  );
+  assert.equal(tail.status, 0, tail.stderr);
+  const fullBoth = run(repo, root, { args: ['--diff', 'feature'] }).stdout;
+  assert.equal(tail.stdout, fullBoth.split('\n').slice(2).join('\n'));
+});
+
+test('--diff --lines fails on a bad range', () => {
+  const { root, repo } = setupRepo();
+  commitFile(repo, root, 'one.txt', '1\n', 'add one');
+  const cases = [
+    { args: ['--lines', '1-2'], message: /^--lines needs --diff\n$/ },
+    { args: ['--diff', '--lines'], message: /^--lines needs a range <start>-<end>/ },
+    { args: ['--diff', '--lines', '5'], message: /^--lines needs a range <start>-<end>/ },
+    { args: ['--diff', '--lines', '0-3'], message: /^Invalid line range: 0-3/ },
+    { args: ['--diff', '--lines', '4-3'], message: /^Invalid line range: 4-3/ },
+    {
+      args: ['--diff', '--lines', '1-2', '--lines', '3-4'],
+      message: /^Expected at most one --lines\n$/,
+    },
+    {
+      args: ['--diff', '--lines', '900-999', 'HEAD~1..HEAD'],
+      message: /^Line range starts after the diff end; the diff has \d+ lines\n$/,
+    },
+  ];
+  for (const { args, message } of cases) {
+    const result = run(repo, root, { args });
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, message);
+  }
+});
+
 test('paths after -- need --diff and at least one path', () => {
   const { root, repo } = setupRepo();
   const cases = [
