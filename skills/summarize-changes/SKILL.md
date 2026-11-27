@@ -20,28 +20,38 @@ Give evidence and let the human judge; give no overall verdict. Read only: do no
    - **Risk:** `low`, `medium`, or `high`, from blast radius, reversibility (data, schema, public API, wire format), and safety nets (tests, flags). Name the evidence.
    - **For review:** a read order (usually contracts, then implementation, then callers and tests), then up to 3 places to look closely at, from the **Risk** boundaries, each with a file and a risk level.
 6. **Verify.** Check the main claims with quick read-only commands (for example, run the tests) when repo rules permit. Under **Evidence**, say what the checks showed and what rests on reading only. Remove points that appear in two sections.
-7. **Print** the template, about one screen, one line per bullet. Omit empty Decision, Assumption, Not in this change, Not in intent, and diagram lines; elsewhere write "none". Add a mermaid `flowchart` only for 4+ blocks that pass data or control to each other: one node per block, labeled edges, no file nodes. If the change is only generated or mechanical, say so in the what-and-why line and skip the omittable lines. Then answer the user's follow-up questions.
+7. **Print** the template, about one screen. Put the verdict word first in each answer. Each bullet holds one fact in about 15 words; give one item per bullet, not a list joined by `;`. Omit empty Gap, Decision, Assumption, and diagram lines; elsewhere write "none". Add a mermaid `flowchart` only for 4+ blocks that pass data or control to each other: one node per block, labeled edges, no file nodes. If the change is only generated or mechanical, say so in the what-and-why line and skip the omittable lines. Then answer the user's follow-up questions.
 
 ```text
 ## Summary: <target>
 `<PR # / branch / range>` · base `<base>` · N files, +X/−Y · uncommitted <included | not included>
-<what and why, one line>. Intent: <source>
+<what and why, one line>
 
-**Scope:** matches intent <yes | partly | no>: <why> · focused <yes | no>: <why>
-- Not in this change: <item>; <item>
-- Not in intent: <item>; <item>
+- **Intent:** <source>
+- **Matches intent:** **<yes | partly | no>**: <why>
+- **Focused:** **<yes | no>**: <why>
+- **Risk:** **<low | medium | high>**: <why, evidence>
+- **Fits codebase:** **<yes | partly | no>**: <why>
 
-**Risk: <low | medium | high>**: <why, evidence>. Read <block> → <block>. Look closely at: <what it touches> (`file`, <risk>); …
+**Gaps**
+- Not in this change: <item>
+- Not in intent: <item>
 
 **Main changes**
 1. **<block>**: <one sentence>. `file`
 
 <optional mermaid flowchart>
 
+**Review**
+- Read: <block> → <block> → <block>
+- Look closely: <what it touches> (`file`, <risk>)
+
 **Approach**
 - Decision: <decision> (<stated | inferred>); rejects <alternative>
 - Assumption: <assumption> (<stated | inferred>)
-- Fits codebase: <yes | partly | no>: <why>
 
-**Evidence:** <checks run and results; what rests on reading only> · <"all files read" | coverage: N in depth, N skimmed, N collapsed (<patterns>), N skipped> · <N not code, if any>
+**Evidence**
+- Checked: <check>: <result>
+- Reading only: <claim>
+- Coverage: <"all files read" | N in depth, N skimmed, N collapsed (<patterns>), N skipped>; <N not code, if any>
 ```
