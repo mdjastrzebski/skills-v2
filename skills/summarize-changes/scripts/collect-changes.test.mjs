@@ -97,6 +97,71 @@ test('default target reports a gh lookup failure', () => {
   assert.deepEqual(result.prLookup, { status: 'error', message: 'authentication failed' });
 });
 
+test('default target on a stacked PR diffs against the PR base, not the default branch', () => {
+  const { root, repo } = setupRepo();
+  git(repo, root, ['switch', '-q', '-c', 'stack-base']);
+  const base = commitFile(repo, root, 'base.txt', 'base\n', 'add base');
+  git(repo, root, ['switch', '-q', '-c', 'feature']);
+  const head = commitFile(repo, root, 'feature.txt', 'feature\n', 'add feature');
+  installFakeGh(
+    root,
+    pullRequestJson({
+      number: 8,
+      headRefName: 'feature',
+      headRefOid: head,
+      baseRefName: 'stack-base',
+      baseRefOid: base,
+    }),
+  );
+
+  const result = runJson(repo, root);
+
+  assert.equal(result.base, base);
+  assert.equal(result.baseRef, 'stack-base');
+  assert.equal(result.pr.number, 8);
+  assert.deepEqual(
+    result.commits.map((commit) => commit.subject),
+    ['add feature'],
+  );
+  assert.deepEqual(Object.keys(byPath(result.files)), ['feature.txt']);
+});
+
+test('default target fails when the stacked PR base is not local', () => {
+  const { root, repo } = setupRepo();
+  git(repo, root, ['switch', '-q', '-c', 'feature']);
+  const head = commitFile(repo, root, 'feature.txt', 'feature\n', 'add feature');
+  installFakeGh(
+    root,
+    pullRequestJson({
+      number: 8,
+      headRefName: 'feature',
+      headRefOid: head,
+      baseRefName: 'stack-base',
+      baseRefOid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    }),
+  );
+
+  const result = run(repo, root);
+
+  assert.notEqual(result.status, 0);
+  assert.match(
+    result.stderr,
+    /^Base branch stack-base of PR 8 is not local; run git fetch origin\n$/,
+  );
+});
+
+test('default target fails when gh returns a PR without a base branch', () => {
+  const { root, repo } = setupRepo();
+  git(repo, root, ['switch', '-q', '-c', 'feature']);
+  commitFile(repo, root, 'feature.txt', 'feature\n', 'add feature');
+  installFakeGh(root, pullRequestJson({ number: 8, headRefName: 'feature', baseRefName: '' }));
+
+  const result = run(repo, root);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /^gh did not return a base branch for PR 8\n$/);
+});
+
 test('branch target diffs from the merge-base and ignores uncommitted changes of another branch', () => {
   const { root, repo } = setupRepo();
   const base = git(repo, root, ['rev-parse', 'HEAD']);
@@ -112,6 +177,36 @@ test('branch target diffs from the merge-base and ignores uncommitted changes of
   assert.equal(result.target.input, 'feature');
   assert.equal(result.base, base);
   assert.equal(result.head, git(repo, root, ['rev-parse', 'feature']));
+  assert.equal(result.uncommitted, false);
+  assert.deepEqual(Object.keys(byPath(result.files)), ['feature.txt']);
+});
+
+test('branch target uses the PR base when that branch has a pull request', () => {
+  const { root, repo } = setupRepo();
+  git(repo, root, ['switch', '-q', '-c', 'stack-base']);
+  const base = commitFile(repo, root, 'base.txt', 'base\n', 'add base');
+  git(repo, root, ['switch', '-q', '-c', 'feature']);
+  const head = commitFile(repo, root, 'feature.txt', 'feature\n', 'add feature');
+  git(repo, root, ['switch', '-q', 'main']);
+  writeFileSync(join(repo, 'dirty.txt'), 'dirty\n');
+  installFakeGh(
+    root,
+    pullRequestJson({
+      number: 8,
+      headRefName: 'feature',
+      headRefOid: head,
+      baseRefName: 'stack-base',
+      baseRefOid: base,
+    }),
+  );
+
+  const result = runJson(repo, root, { args: ['feature'] });
+
+  assert.equal(result.target.kind, 'branch');
+  assert.equal(result.base, base);
+  assert.equal(result.baseRef, 'stack-base');
+  assert.equal(result.pr.number, 8);
+  assert.deepEqual(result.prLookup, { status: 'found' });
   assert.equal(result.uncommitted, false);
   assert.deepEqual(Object.keys(byPath(result.files)), ['feature.txt']);
 });
@@ -523,6 +618,32 @@ test('empty diff gives empty files', () => {
   assert.deepEqual(result.totals, { files: 0, added: 0, removed: 0, excludedFiles: 0 });
 });
 
+test('PR target diffs against its base branch when that is not the default branch', () => {
+  const { root, repo } = setupRepo();
+  git(repo, root, ['switch', '-q', '-c', 'stack-base']);
+  const base = commitFile(repo, root, 'base.txt', 'base\n', 'add base');
+  git(repo, root, ['switch', '-q', '-c', 'feature']);
+  const head = commitFile(repo, root, 'feature.txt', 'feature\n', 'add feature');
+  git(repo, root, ['switch', '-q', 'main']);
+  installFakeGh(
+    root,
+    pullRequestJson({
+      number: 8,
+      headRefName: 'feature',
+      headRefOid: head,
+      baseRefName: 'stack-base',
+      baseRefOid: base,
+    }),
+  );
+
+  const result = runJson(repo, root, { args: ['8'] });
+
+  assert.equal(result.base, base);
+  assert.equal(result.baseRef, 'stack-base');
+  assert.equal(result.head, head);
+  assert.deepEqual(Object.keys(byPath(result.files)), ['feature.txt']);
+});
+
 test('PR target uses gh data and diffs from the merge-base, without uncommitted changes', () => {
   const { root, repo } = setupRepo();
   const base = git(repo, root, ['rev-parse', 'HEAD']);
@@ -689,13 +810,19 @@ function writeFakeGh(root, body) {
   chmodSync(ghPath, 0o755);
 }
 
-function pullRequestJson({ number, headRefName, headRefOid = '', baseRefOid = '' }) {
+function pullRequestJson({
+  number,
+  headRefName,
+  headRefOid = '',
+  baseRefName = 'main',
+  baseRefOid = '',
+}) {
   return {
     number,
     title: 'Add a',
     body: 'Adds a.',
     url: `https://github.com/owner/repo/pull/${number}`,
-    baseRefName: 'main',
+    baseRefName,
     baseRefOid,
     headRefName,
     headRefOid,

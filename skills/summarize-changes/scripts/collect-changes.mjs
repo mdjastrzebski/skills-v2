@@ -15,10 +15,10 @@ With --lines <start>-<end>, the diff shows only those diff output lines (1-based
 If lines remain after <end>, a last line "[diff continues: lines <next>-<total> of <total>]" follows.
 
 Targets:
-- nothing: current branch against its merge-base with the default branch, plus uncommitted changes
-- <number> or <GitHub PR URL>: the PR (needs gh)
-- <A>..<B> or <A>...<B>: that git range, with no uncommitted changes
-- <branch>: merge-base(default branch, branch)..branch`;
+- nothing: current branch plus uncommitted changes, against its PR base when gh finds one, else the default branch
+- <number> or <GitHub PR URL>: that PR against its base (needs gh)
+- <A>..<B> or <A>...<B>: that git range, no uncommitted changes
+- <branch>: that branch against its PR base when gh finds one, else the default branch`;
 
 const PR_FIELDS =
   'number,title,body,url,baseRefName,baseRefOid,headRefName,headRefOid,closingIssuesReferences';
@@ -193,10 +193,8 @@ function resolvePullRequest(target, root) {
   const checkout = readCheckout(root);
   const isCheckedOut = checkout.commit !== null && checkout.commit === data.headRefOid;
   const headCommit = isCheckedOut ? checkout.commit : ensurePullRequestHead(data, root);
-  const baseRef = findPullRequestBase(data, root);
   return {
-    base: mergeBase(baseRef.commit, headCommit, root),
-    baseRef: baseRef.name,
+    ...pullRequestComparison(data, headCommit, root),
     headCommit,
     uncommitted: isCheckedOut && hasUncommittedChanges(root),
     pr: toPullRequestSummary(data),
@@ -217,16 +215,18 @@ function resolveRange(target, root) {
 
 function resolveBranch(target, root) {
   const headCommit = resolveCommit(target.name, root);
-  const defaultBranch = findDefaultBranch(root);
   const checkout = readCheckout(root);
   const fullName = git(['rev-parse', '--symbolic-full-name', target.name], root).trim();
   const isCurrent = checkout.branch !== null && fullName === `refs/heads/${checkout.branch}`;
+  const lookup = findPullRequest(root, target.name);
+  const comparison = comparisonBase(lookup, headCommit, root);
   return {
-    base: mergeBase(defaultBranch.commit, headCommit, root),
-    baseRef: defaultBranch.name,
+    base: comparison.base,
+    baseRef: comparison.baseRef,
     headCommit,
     uncommitted: isCurrent && hasUncommittedChanges(root),
-    pr: null,
+    pr: lookup.pr ?? null,
+    prLookup: toPrLookup(lookup),
   };
 }
 
@@ -235,21 +235,41 @@ function resolveCurrent(root) {
   if (checkout.commit === null) {
     throw new Error('HEAD has no commit yet; make a first commit');
   }
-  const defaultBranch = findDefaultBranch(root);
-  const lookup =
-    checkout.branch === null ? { status: 'not_attempted' } : findCurrentPullRequest(root);
+  const lookup = checkout.branch === null ? { status: 'not_attempted' } : findPullRequest(root);
+  const comparison = comparisonBase(lookup, checkout.commit, root);
   return {
-    base: mergeBase(defaultBranch.commit, checkout.commit, root),
-    baseRef: defaultBranch.name,
+    base: comparison.base,
+    baseRef: comparison.baseRef,
     headCommit: checkout.commit,
     uncommitted: hasUncommittedChanges(root),
     pr: lookup.pr ?? null,
-    prLookup: { status: lookup.status, ...(lookup.message ? { message: lookup.message } : {}) },
+    prLookup: toPrLookup(lookup),
   };
 }
 
+function toPrLookup(lookup) {
+  return { status: lookup.status, ...(lookup.message ? { message: lookup.message } : {}) };
+}
+
+/** PR base when one is found, otherwise the default branch. */
+function comparisonBase(lookup, headCommit, root) {
+  if (lookup.status === 'found') {
+    return pullRequestComparison(lookup.data, headCommit, root);
+  }
+  const defaultBranch = findDefaultBranch(root);
+  return {
+    base: mergeBase(defaultBranch.commit, headCommit, root),
+    baseRef: defaultBranch.name,
+  };
+}
+
+function pullRequestComparison(data, headCommit, root) {
+  const baseRef = findPullRequestBase(data, root);
+  return { base: mergeBase(baseRef.commit, headCommit, root), baseRef: baseRef.name };
+}
+
 function viewPullRequest(ghArgument, root) {
-  const result = runGh(['pr', 'view', ghArgument, '--json', PR_FIELDS], root);
+  const result = runPrView(ghArgument, root);
   if (result.error?.code === 'ENOENT') {
     throw new Error('gh is not installed; give a branch name instead of a PR');
   }
@@ -262,8 +282,9 @@ function viewPullRequest(ghArgument, root) {
   return parsePullRequestJson(result.stdout, ghArgument);
 }
 
-function findCurrentPullRequest(root) {
-  const result = runGh(['pr', 'view', '--json', PR_FIELDS], root);
+function findPullRequest(root, ref) {
+  const label = ref ?? 'for the current branch';
+  const result = runPrView(ref, root);
   if (result.error?.code === 'ENOENT') {
     return { status: 'gh_missing' };
   }
@@ -274,10 +295,13 @@ function findCurrentPullRequest(root) {
     const message = firstLine(result.stderr);
     return { status: /^no pull requests found\b/i.test(message) ? 'not_found' : 'error', message };
   }
-  return {
-    status: 'found',
-    pr: toPullRequestSummary(parsePullRequestJson(result.stdout, 'for the current branch')),
-  };
+  const data = parsePullRequestJson(result.stdout, label);
+  return { status: 'found', pr: toPullRequestSummary(data), data };
+}
+
+function runPrView(ref, root) {
+  const target = ref === undefined ? [] : [ref];
+  return runGh(['pr', 'view', ...target, '--json', PR_FIELDS], root);
 }
 
 function parsePullRequestJson(text, label) {
@@ -312,6 +336,9 @@ function ensurePullRequestHead(data, root) {
 }
 
 function findPullRequestBase(data, root) {
+  if (!data.baseRefName) {
+    throw new Error(`gh did not return a base branch for PR ${data.number}`);
+  }
   const name = data.baseRefName;
   if (data.baseRefOid && commitExists(data.baseRefOid, root)) {
     return { name, commit: data.baseRefOid };
