@@ -87,8 +87,7 @@ test('default target continues without PR data when gh is missing', () => {
   const { root, repo } = setupRepo();
   const result = runJson(repo, root, { withoutGh: true });
   assert.equal(result.pr, null);
-  assert.equal(result.prLookup.status, 'error');
-  assert.match(result.prLookup.message, /ENOENT/);
+  assert.deepEqual(result.prLookup, { status: 'gh_missing' });
 });
 
 test('default target reports a gh lookup failure', () => {

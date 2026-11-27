@@ -264,6 +264,9 @@ function viewPullRequest(ghArgument, root) {
 
 function findCurrentPullRequest(root) {
   const result = runGh(['pr', 'view', '--json', PR_FIELDS], root);
+  if (result.error?.code === 'ENOENT') {
+    return { status: 'gh_missing' };
+  }
   if (result.error) {
     return { status: 'error', message: result.error.message };
   }
